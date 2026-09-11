@@ -112,22 +112,39 @@ class App:
 
     def select_chat_region(self):
         self.root.withdraw()
-        selector = tk.Toplevel()
+        try:
+            screen = pyautogui.screenshot()
+        except Exception as exc:
+            self.root.deiconify()
+            messagebox.showerror("Область чата", f"Не удалось получить экран: {exc}")
+            return
+
+        selector = tk.Toplevel(self.root)
+        selector.title("Выберите область чата")
         selector.attributes("-fullscreen", True)
         selector.attributes("-topmost", True)
-        selector.attributes("-alpha", 0.25)
         selector.configure(bg="black")
         selector.config(cursor="crosshair")
 
-        canvas = tk.Canvas(selector, bg="black", highlightthickness=0)
+        # Keep the selector visually tied to the actual screenshot pixels.
+        # This prevents choosing coordinates on a transparent overlay that
+        # later map to another place under Windows DPI scaling.
+        from PIL import ImageTk
+        photo = ImageTk.PhotoImage(screen)
+        canvas = tk.Canvas(
+            selector, width=screen.width, height=screen.height,
+            highlightthickness=0, bd=0
+        )
         canvas.pack(fill="both", expand=True)
+        canvas.create_image(0, 0, image=photo, anchor="nw")
+        canvas.image = photo
 
         start = {}
         rect = None
 
         def press(event):
             nonlocal rect
-            start["x"], start["y"] = event.x, event.y
+            start["x"], start["y"] = int(event.x), int(event.y)
             if rect is not None:
                 canvas.delete(rect)
             rect = canvas.create_rectangle(
@@ -142,14 +159,20 @@ class App:
             canvas.coords(rect, start["x"], start["y"], event.x, event.y)
 
         def release(event):
-            if "x" in start:
-                x1, y1 = start["x"], start["y"]
-                self.telegram.set_region((
-                    min(x1, event.x), min(y1, event.y),
-                    abs(event.x - x1), abs(event.y - y1)
-                ))
+            if "x" not in start:
+                return
+            x1, y1 = start["x"], start["y"]
+            x2, y2 = int(event.x), int(event.y)
+            x = min(x1, x2)
+            y = min(y1, y2)
+            w = abs(x2 - x1)
+            h = abs(y2 - y1)
+            if w < 5 or h < 5:
+                return
+            self.telegram.set_region((x, y, w, h))
             selector.destroy()
             self.root.deiconify()
+            self.status_var.set(f"Область чата выбрана: X={x}, Y={y}, W={w}, H={h}")
 
         selector.bind("<ButtonPress-1>", press)
         selector.bind("<B1-Motion>", drag)
@@ -157,7 +180,7 @@ class App:
         selector.bind("<Escape>", lambda _e: (selector.destroy(), self.root.deiconify()))
         selector.focus_force()
 
-    def start_telegram(self):
+    def    def start_telegram(self):
         if self.telegram_thread and self.telegram_thread.is_alive():
             return
         self.telegram_stop.clear()
@@ -211,25 +234,51 @@ class App:
             return
         x, y, w, h = self.telegram.region
         try:
-            # PyAutoGUI uses physical screen pixels. The app is made
-            # per-monitor-DPI-aware above so these saved coordinates match.
-            image = pyautogui.screenshot(region=(int(x), int(y), int(w), int(h)))
+            # Hide the main window while capturing so it can never cover the
+            # selected area. Restore it immediately after the screenshot.
+            self.root.withdraw()
+            self.root.update_idletasks()
+            image = pyautogui.screenshot(
+                region=(int(x), int(y), int(w), int(h))
+            )
+            self.root.deiconify()
             text, ocr_engine = self.telegram.recognize(image)
             is_new, new_status = self.telegram.check_new_message(text)
             self.status_var.set(f"Проверка чата: {new_status}")
+
             viewer = tk.Toplevel(self.root)
             viewer.title("Проверить область чата")
-            viewer.geometry("760x620")
-            ttk.Label(viewer, text=f"Координаты: X={x}, Y={y}, W={w}, H={h}").pack(pady=8)
-            ttk.Label(viewer, text=f"Новое сообщение: {'ДА' if is_new else 'НЕТ'}", font=("Segoe UI", 11, "bold")).pack(pady=(0, 4))
+            viewer.geometry("900x760")
+            ttk.Label(
+                viewer,
+                text=f"Координаты: X={x}, Y={y}, W={w}, H={h}"
+            ).pack(pady=8)
+            ttk.Label(
+                viewer,
+                text=f"Новое сообщение: {'ДА' if is_new else 'НЕТ'}",
+                font=("Segoe UI", 11, "bold")
+            ).pack(pady=(0, 4))
             ttk.Label(viewer, text=new_status).pack(pady=(0, 4))
             ttk.Label(viewer, text=f"OCR: {ocr_engine}").pack(pady=(0, 8))
-            box = tk.Text(viewer, wrap="word")
+
+            # Show exactly the pixels sent to OCR.
+            from PIL import ImageTk
+            preview = ImageTk.PhotoImage(image)
+            preview_label = ttk.Label(viewer, image=preview)
+            preview_label.pack(fill="x", padx=10, pady=(0, 8))
+            preview_label.image = preview
+
+            box = tk.Text(viewer, wrap="word", height=12)
             box.pack(fill="both", expand=True, padx=10, pady=10)
             box.insert("1.0", text or "Текст не распознан.")
             box.configure(state="disabled")
         except Exception as exc:
+            try:
+                self.root.deiconify()
+            except Exception:
+                pass
             messagebox.showerror("OCR", str(exc))
+
 
     def select_point(self):
         if self.worker and self.worker.is_alive():
