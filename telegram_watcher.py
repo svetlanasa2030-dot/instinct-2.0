@@ -27,21 +27,22 @@ class TelegramWatcher:
         # scripts; no whitelist is applied to the extracted nickname.
         self.ocr_cyrillic = None
         self.ocr_chinese = None
+        self.ocr_errors = []
+        self.ocrspace_error = ""
         if RapidOCR:
             self.ocr_cyrillic = self._create_ocr(LangRec.CYRILLIC)
             self.ocr_chinese = self._create_ocr(LangRec.CH)
+        else:
+            self.ocr_errors.append("RapidOCR не импортирован")
         self.ocr_init_status = (
             "RapidOCR: Cyrillic + Chinese"
             if (self.ocr_cyrillic or self.ocr_chinese)
-            else "RapidOCR не загрузился — используется OCR.Space"
+            else "RapidOCR не загрузился"
         )
 
     def _create_ocr(self, language):
         try:
             return RapidOCR(params={
-                # The game chat is horizontal; disabling orientation classification
-                # avoids loading an unnecessary model and makes startup more reliable.
-                "Global.use_cls": False,
                 "Det.engine_type": EngineType.ONNXRUNTIME,
                 "Det.lang_type": LangDet.CH,
                 "Det.model_type": ModelType.MOBILE,
@@ -51,7 +52,8 @@ class TelegramWatcher:
                 "Rec.model_type": ModelType.MOBILE,
                 "Rec.ocr_version": OCRVersion.PPOCRV5,
             })
-        except Exception:
+        except Exception as exc:
+            self.ocr_errors.append(f"{language.value}: {type(exc).__name__}: {exc}")
             return None
 
     def set_credentials(self, token, chat_id):
@@ -156,13 +158,17 @@ class TelegramWatcher:
                 timeout=20,
             )
             if not response.ok:
+                self.ocrspace_error = f"HTTP {response.status_code}"
                 return ""
             data = response.json()
             if data.get("IsErroredOnProcessing"):
+                errors = data.get("ErrorMessage") or data.get("ErrorDetails") or "OCR.Space error"
+                self.ocrspace_error = str(errors)
                 return ""
             parsed = data.get("ParsedResults") or []
             return "\n".join(p.get("ParsedText", "") for p in parsed).strip()
-        except (requests.RequestException, ValueError, OSError):
+        except (requests.RequestException, ValueError, OSError) as exc:
+            self.ocrspace_error = f"{type(exc).__name__}: {exc}"
             return ""
 
     def _ocr_variants(self, image):
@@ -369,6 +375,14 @@ class TelegramWatcher:
 
         if fallback_best and len(fallback_best.strip()) > 1:
             return fallback_best, "OCR.Space Auto"
+
+        diagnostics = []
+        if self.ocr_errors:
+            diagnostics.append("RapidOCR: " + " | ".join(self.ocr_errors))
+        if self.ocrspace_error:
+            diagnostics.append("OCR.Space: " + self.ocrspace_error)
+        if diagnostics:
+            return "", "OCR не распознал текст — " + " || ".join(diagnostics)
 
         return best_text, best_engine
 
