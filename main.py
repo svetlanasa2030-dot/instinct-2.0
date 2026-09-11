@@ -15,7 +15,7 @@ class App:
         self.x = None
         self.y = None
 
-        self.interval_var = tk.StringVar(value="60")
+        self.interval_var = tk.StringVar(value="5")
         self.status_var = tk.StringVar(value="Готово")
         self.timer_var = tk.StringVar(value="До следующего выполнения: —")
 
@@ -33,7 +33,7 @@ class App:
         self.point_label = ttk.Label(frame, text="Точка: не выбрана")
         self.point_label.grid(row=2, column=0, columnspan=2, pady=6)
 
-        ttk.Label(frame, text="Интервал, сек:").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Label(frame, text="Интервал, мин:").grid(row=3, column=0, sticky="w", pady=6)
         ttk.Entry(frame, textvariable=self.interval_var, width=14).grid(row=3, column=1, sticky="w")
 
         ttk.Label(
@@ -85,12 +85,12 @@ class App:
         if self.x is None or self.y is None:
             raise ValueError("Сначала нажмите «Указать точку на экране».")
         try:
-            interval = float(self.interval_var.get())
+            interval_minutes = float(self.interval_var.get())
         except ValueError:
             raise ValueError("Интервал должен быть числом.")
-        if interval < 0:
+        if interval_minutes < 0:
             raise ValueError("Интервал не может быть отрицательным.")
-        return interval
+        return interval_minutes * 60
 
     def start(self):
         if self.worker and self.worker.is_alive():
@@ -143,7 +143,7 @@ class App:
                     self.root.after(
                         0,
                         self.timer_var.set,
-                        f"До следующего выполнения: {remaining:.1f} сек"
+                        f"До следующего выполнения: {remaining / 60:.1f} мин"
                     )
                     if remaining <= 0:
                         break
