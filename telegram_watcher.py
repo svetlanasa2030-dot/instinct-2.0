@@ -351,7 +351,7 @@ class TelegramWatcher:
                 best_engine = f"OCR.Space Russian ({variant_name})"
             # OCR.Space Engine 2 supports automatic language detection and
             # can read mixed Russian/Chinese/Latin text in the same line.
-            if cls._personal_messages(fallback):
+            if self._personal_messages(fallback):
                 return fallback, f"OCR.Space Auto ({variant_name})"
             # Keep any non-empty fallback text as a candidate for diagnostics.
             if fallback and len(fallback.strip()) > 2:
