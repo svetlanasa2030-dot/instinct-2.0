@@ -21,7 +21,7 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller
       - name: Build EXE
-        run: pyinstaller --noconfirm --clean --onefile --windowed --name Instinct-2.0 main.py
+        run: pyinstaller --noconfirm --clean --onefile --windowed --collect-all rapidocr_onnxruntime --name Instinct-2.0 main.py
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
