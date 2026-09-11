@@ -174,10 +174,13 @@ class App:
             if self.telegram.ocr:
                 result, _ = self.telegram.ocr(image)
                 text = "\n".join(item[1] for item in result) if result else ""
+            is_new, new_status = self.telegram.check_new_message(text)
+            self.status_var.set(f"Проверка чата: {new_status}")
             viewer = tk.Toplevel(self.root)
             viewer.title("Проверить область чата")
             viewer.geometry("760x620")
             ttk.Label(viewer, text=f"Координаты: X={x}, Y={y}, W={w}, H={h}").pack(pady=8)
+            ttk.Label(viewer, text=f"Новое сообщение: {'ДА' if is_new else 'НЕТ'}", font=("Segoe UI", 11, "bold")).pack(pady=(0, 8))
             box = tk.Text(viewer, wrap="word")
             box.pack(fill="both", expand=True, padx=10, pady=10)
             box.insert("1.0", text or "Текст не распознан.")
