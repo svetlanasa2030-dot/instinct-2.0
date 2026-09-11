@@ -43,7 +43,7 @@ class TelegramWatcher:
                 # avoids loading an unnecessary model and makes startup more reliable.
                 "Global.use_cls": False,
                 "Det.engine_type": EngineType.ONNXRUNTIME,
-                "Det.lang_type": LangDet.CH,
+                "Det.lang_type": LangDet.MULTI,
                 "Det.model_type": ModelType.MOBILE,
                 "Det.ocr_version": OCRVersion.PPOCRV5,
                 "Rec.engine_type": EngineType.ONNXRUNTIME,
@@ -147,7 +147,7 @@ class TelegramWatcher:
                 files={"file": ("chat.png", buf.getvalue(), "image/png")},
                 data={
                     "apikey": self.ocrspace_key,
-                    "language": "rus",
+                    "language": "auto",
                     "OCREngine": "2",
                     "isOverlayRequired": "false",
                     "scale": "true",
@@ -329,8 +329,10 @@ class TelegramWatcher:
 
             # The fixed Russian markers are the authoritative signal that a
             # line is a personal whisper.
-            if "Лично" in cyr_text and "шепчет" in cyr_text and cyr_conf >= 0.45:
+            if ("Лично" in cyr_text or "Лично" in ch_text) and cyr_conf >= 0.35:
                 merged = self._merge_multilingual_nickname(cyr_text, ch_text)
+                if not merged:
+                    merged = self._merge_multilingual_nickname(ch_text, cyr_text)
                 if merged:
                     # Return a normalized two-line OCR representation so the
                     # existing Telegram parser can use it unchanged.
@@ -347,8 +349,13 @@ class TelegramWatcher:
             if score > best_score:
                 best_text, best_score = fallback, score
                 best_engine = f"OCR.Space Russian ({variant_name})"
-            if "Лично" in fallback:
-                return fallback, f"OCR.Space Russian ({variant_name})"
+            # OCR.Space Engine 2 supports automatic language detection and
+            # can read mixed Russian/Chinese/Latin text in the same line.
+            if cls._personal_messages(fallback):
+                return fallback, f"OCR.Space Auto ({variant_name})"
+            # Keep any non-empty fallback text as a candidate for diagnostics.
+            if fallback and len(fallback.strip()) > 2:
+                return fallback, f"OCR.Space Auto ({variant_name})"
 
         return best_text, best_engine
 
