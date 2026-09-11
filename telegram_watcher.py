@@ -4,9 +4,10 @@ import time
 import requests
 
 try:
-    from rapidocr_onnxruntime import RapidOCR
+    from rapidocr import RapidOCR, EngineType, LangDet, LangRec, ModelType, OCRVersion
 except Exception:
     RapidOCR = None
+    EngineType = LangDet = LangRec = ModelType = OCRVersion = None
 
 
 class TelegramWatcher:
@@ -20,7 +21,25 @@ class TelegramWatcher:
         self.stop_event = __import__("threading").Event()
         self.seen = set()
         self.last_results = []
-        self.ocr = RapidOCR() if RapidOCR else None
+        self.ocr = None
+        if RapidOCR:
+            try:
+                self.ocr = RapidOCR(params={
+                    "Det.engine_type": EngineType.ONNXRUNTIME,
+                    "Det.lang_type": LangDet.CH,
+                    "Det.model_type": ModelType.MOBILE,
+                    "Det.ocr_version": OCRVersion.PPOCRV5,
+                    "Rec.engine_type": EngineType.ONNXRUNTIME,
+                    "Rec.lang_type": LangRec.CYRILLIC,
+                    "Rec.model_type": ModelType.MOBILE,
+                    "Rec.ocr_version": OCRVersion.PPOCRV5,
+                    "Cls.engine_type": EngineType.ONNXRUNTIME,
+                    "Cls.lang_type": LangDet.CH,
+                    "Cls.model_type": ModelType.MOBILE,
+                    "Cls.ocr_version": OCRVersion.PPOCRV4,
+                })
+            except Exception:
+                self.ocr = None
 
     def set_credentials(self, token, chat_id):
         self.token = token.strip()
@@ -194,53 +213,54 @@ class TelegramWatcher:
         if not self.ocr:
             return "", 0.0
         try:
-            result, _ = self.ocr(image)
-            if not result:
+            result = self.ocr(image)
+            if result is None:
                 return "", 0.0
-            parts = []
-            scores = []
-            for item in result:
-                if len(item) >= 3:
-                    parts.append(str(item[1]))
-                    try:
-                        scores.append(float(item[2]))
-                    except (TypeError, ValueError):
-                        pass
-                elif len(item) >= 2:
-                    parts.append(str(item[1]))
-            text = "\n".join(parts)
-            confidence = sum(scores) / len(scores) if scores else 0.0
-            return text, confidence
+            if hasattr(result, "txts"):
+                texts = list(result.txts or ())
+                scores = list(result.scores or ())
+                text = "\n".join(str(x) for x in texts if str(x).strip())
+                confidence = sum(float(x) for x in scores) / len(scores) if scores else 0.0
+                return text, confidence
+            if isinstance(result, (tuple, list)) and len(result) >= 2:
+                raw = result[0]
+                parts, scores = [], []
+                for item in raw or []:
+                    if len(item) >= 3:
+                        parts.append(str(item[1]))
+                        try:
+                            scores.append(float(item[2]))
+                        except (TypeError, ValueError):
+                            pass
+                return "\n".join(parts), (sum(scores)/len(scores) if scores else 0.0)
         except Exception:
             return "", 0.0
+        return "", 0.0
 
     def recognize(self, image):
-        """Game-chat OCR with multiple visual passes.
-        No character whitelist or post-filter is applied to usernames/messages.
-        """
+        """Russian game-chat OCR: dedicated Cyrillic model first, OCR.Space fallback."""
         best_text = ""
         best_score = -100000.0
         best_engine = "OCR не распознал текст"
+        variants = self._ocr_variants(image)
 
-        for variant_name, variant in self._ocr_variants(image):
+        for variant_name, variant in variants:
             text, confidence = self._run_rapidocr(variant)
             score = self._score_ocr(text, confidence)
             if score > best_score:
                 best_text, best_score = text, score
-                best_engine = f"RapidOCR ({variant_name})"
-            if "Лично" in text and confidence >= 0.45:
-                return text, f"RapidOCR ({variant_name})"
+                best_engine = f"RapidOCR Cyrillic ({variant_name})"
+            if "Лично" in text and confidence >= 0.55:
+                return text, f"RapidOCR Cyrillic ({variant_name})"
 
-        # OCR.Space is a fallback, not a replacement for the original image.
-        # Try the enlarged/contrast variants as well.
-        for variant_name, variant in self._ocr_variants(image):
+        for variant_name, variant in variants:
             fallback = self._ocr_space(variant)
             score = self._score_ocr(fallback, 0.0)
             if score > best_score:
                 best_text, best_score = fallback, score
-                best_engine = f"OCR.Space ({variant_name})"
+                best_engine = f"OCR.Space Russian ({variant_name})"
             if "Лично" in fallback:
-                return fallback, f"OCR.Space ({variant_name})"
+                return fallback, f"OCR.Space Russian ({variant_name})"
 
         return best_text, best_engine
 
