@@ -76,6 +76,16 @@ class TelegramWatcher:
                 return player, message
         return None
 
+    def check_new_message(self, text):
+        result = self.extract_personal(text)
+        if not result:
+            return False, "НЕТ — сообщений «Лично» не найдено"
+        player, message = result
+        key = f"{player}\n{message}"
+        if key in self.seen:
+            return False, "НЕТ — сообщение уже обработано"
+        return True, "ДА — найдено новое сообщение"
+
     def process_ocr_text(self, text):
         result = self.extract_personal(text)
         if not result:
