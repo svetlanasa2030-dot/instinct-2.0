@@ -163,12 +163,8 @@ class App:
                 messages = self.telegram.extract_personal_all(text)
 
                 if messages:
-                    for player, message in messages:
-                        key = f"{player}\\n{message}"
-                        if key in self.telegram.seen:
-                            event = f"ПОВТОР — {player}: {message}"
-                        else:
-                            event = f"{status or 'НЕ ОТПРАВЛЕНО'} — {player}: {message}"
+                    for player, message, sent_ok, message_status in self.telegram.last_results:
+                        event = f"{message_status} — {player}: {message}"
                         self.root.after(0, self.add_telegram_log, event)
                     self.root.after(0, self.status_var.set,
                                      f"Чат: найдено {len(messages)} личных сообщений | {status or 'без новых'}")
