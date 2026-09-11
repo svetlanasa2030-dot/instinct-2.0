@@ -128,6 +128,7 @@ class App:
         while not self.stop_event.is_set():
             try:
                 pyautogui.moveTo(x, y, duration=0.15)
+                pyautogui.click(x, y)
                 pyautogui.press("up")
                 pyautogui.press("enter")
 
