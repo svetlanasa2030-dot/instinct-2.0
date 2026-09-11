@@ -16,6 +16,7 @@ class App:
 
         self.interval_var = tk.StringVar(value="60")
         self.status_var = tk.StringVar(value="Готово")
+        self.timer_var = tk.StringVar(value="До следующего выполнения: —")
 
         frame = ttk.Frame(root, padding=18)
         frame.grid()
@@ -46,11 +47,12 @@ class App:
         self.stop_btn = ttk.Button(buttons, text="Стоп", command=self.stop, state="disabled")
         self.stop_btn.grid(row=0, column=1, padx=5)
 
+        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=6, column=0, columnspan=2, pady=(4, 2))
         ttk.Label(frame, textvariable=self.status_var).grid(
-            row=6, column=0, columnspan=2, pady=4
+            row=7, column=0, columnspan=2, pady=4
         )
         ttk.Label(frame, text="F8 — запуск / остановка").grid(
-            row=7, column=0, columnspan=2, pady=(10, 0)
+            row=8, column=0, columnspan=2, pady=(10, 0)
         )
 
         self.root.bind("<F8>", lambda _event: self.toggle())
@@ -106,12 +108,14 @@ class App:
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.status_var.set(f"Запущено: X={self.x}, Y={self.y}")
+        self.timer_var.set("До следующего выполнения: сейчас")
 
     def stop(self):
         self.stop_event.set()
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.status_var.set("Остановлено")
+        self.timer_var.set("До следующего выполнения: —")
 
     def toggle(self):
         if self.worker and self.worker.is_alive():
@@ -132,7 +136,19 @@ class App:
                 pyautogui.press("enter")
                 self.root.after(0, self.status_var.set, f"Выполнено в ({x}, {y})")
 
-                if self.stop_event.wait(interval):
+                end_time = time.monotonic() + interval
+                while not self.stop_event.is_set():
+                    remaining = max(0, end_time - time.monotonic())
+                    self.root.after(
+                        0,
+                        self.timer_var.set,
+                        f"До следующего выполнения: {remaining:.1f} сек"
+                    )
+                    if remaining <= 0:
+                        break
+                    if self.stop_event.wait(min(0.1, remaining)):
+                        break
+                if self.stop_event.is_set():
                     break
             except Exception as exc:
                 self.root.after(0, self.status_var.set, f"Ошибка: {exc}")
