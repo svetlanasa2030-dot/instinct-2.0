@@ -157,7 +157,9 @@ class App:
                 if self.telegram.ocr:
                     result, _ = self.telegram.ocr(image)
                     text = "\n".join(item[1] for item in result) if result else ""
-                    self.telegram.process_ocr_text(text)
+                    ok, status = self.telegram.process_ocr_text(text)
+                    if status:
+                        self.root.after(0, self.status_var.set, f"Telegram: {status}")
             except Exception:
                 continue
 
