@@ -17,7 +17,7 @@ class App:
 
         self.interval_var = tk.StringVar(value="5")
         self.status_var = tk.StringVar(value="Готово")
-        self.timer_var = tk.StringVar(value="До следующего выполнения: —")
+        self.timer_var = tk.StringVar(value="Осталось: 00:00:00")
 
         frame = ttk.Frame(root, padding=18)
         frame.grid()
@@ -109,14 +109,14 @@ class App:
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
         self.status_var.set(f"Запущено: X={self.x}, Y={self.y}")
-        self.timer_var.set("До следующего выполнения: сейчас")
+        self.timer_var.set("Осталось: 00:00:00")
 
     def stop(self):
         self.stop_event.set()
         self.start_btn.config(state="normal")
         self.stop_btn.config(state="disabled")
         self.status_var.set("Остановлено")
-        self.timer_var.set("До следующего выполнения: —")
+        self.timer_var.set("Осталось: 00:00:00")
 
     def toggle(self):
         if self.worker and self.worker.is_alive():
@@ -144,7 +144,7 @@ class App:
                     self.root.after(
                         0,
                         self.timer_var.set,
-                        f"До следующего выполнения: {remaining / 60:.1f} мин"
+                        f"Осталось: {int(remaining // 3600):02d}:{int((remaining % 3600) // 60):02d}:{int(remaining % 60):02d}"
                     )
                     if remaining <= 0:
                         break
