@@ -305,57 +305,70 @@ class TelegramWatcher:
         return [(player, message)]
 
     def recognize(self, image):
-        """Multilingual game-chat OCR.
+        """Robust multilingual OCR for the game chat.
 
-        Fixed words «Лично»/«шепчет» are recognized with the Cyrillic model.
-        The nickname is additionally checked with the Chinese/English model,
-        so a name such as 剑奇卡, Player_X7 or mixed text is not forced through
-        a Russian-only dictionary. No nickname whitelist or character
-        substitution is applied.
+        Do not require a perfect OCR confidence score before parsing a
+        personal message. Small game-chat text can temporarily produce a low
+        confidence score even when the words are usable.
         """
         best_text = ""
         best_score = -100000.0
         best_engine = "OCR не распознал текст"
         variants = self._ocr_variants(image)
 
+        # Local OCR: test every image variant with both recognition dictionaries.
         for variant_name, variant in variants:
             cyr_text, cyr_conf = self._run_rapidocr(variant, self.ocr_cyrillic)
             ch_text, ch_conf = self._run_rapidocr(variant, self.ocr_chinese)
 
-            score = self._score_ocr(cyr_text, cyr_conf)
-            if score > best_score:
-                best_text, best_score = cyr_text, score
-                best_engine = f"RapidOCR Cyrillic + Chinese ({variant_name})"
+            for txt, conf, label in (
+                (cyr_text, cyr_conf, "Cyrillic"),
+                (ch_text, ch_conf, "Chinese/Latin"),
+            ):
+                score = self._score_ocr(txt, conf)
+                if score > best_score:
+                    best_text, best_score = txt, score
+                    best_engine = f"RapidOCR {label} ({variant_name})"
 
-            # The fixed Russian markers are the authoritative signal that a
-            # line is a personal whisper.
-            if ("Лично" in cyr_text or "Лично" in ch_text) and cyr_conf >= 0.35:
-                merged = self._merge_multilingual_nickname(cyr_text, ch_text)
-                if not merged:
-                    merged = self._merge_multilingual_nickname(ch_text, cyr_text)
-                if merged:
-                    # Return a normalized two-line OCR representation so the
-                    # existing Telegram parser can use it unchanged.
-                    player, message = merged[0]
-                    return (
-                        f"Лично {player} шепчет: {message}",
-                        f"RapidOCR multilingual ({variant_name})"
-                    )
+            # Accept a usable personal-message marker even when confidence is
+            # below the previous 0.35 threshold.
+            cyr_personal = self._personal_messages(cyr_text)
+            ch_personal = self._personal_messages(ch_text)
 
-        # OCR.Space Russian remains the network fallback.
+            if cyr_personal:
+                player, message = self._merge_multilingual_nickname(
+                    cyr_text, ch_text
+                )[0] if self._merge_multilingual_nickname(cyr_text, ch_text) else cyr_personal[0]
+                return (
+                    f"Лично {player} шепчет: {message}",
+                    f"RapidOCR multilingual ({variant_name})"
+                )
+
+            if ch_personal:
+                player, message = ch_personal[0]
+                return (
+                    f"Лично {player} шепчет: {message}",
+                    f"RapidOCR multilingual ({variant_name})"
+                )
+
+        # OCR.Space fallback: try all variants and accept any personal message.
+        # Engine 2 + language=auto can detect multiple languages in one image.
+        fallback_best = ""
         for variant_name, variant in variants:
             fallback = self._ocr_space(variant)
-            score = self._score_ocr(fallback, 0.0)
-            if score > best_score:
-                best_text, best_score = fallback, score
-                best_engine = f"OCR.Space Russian ({variant_name})"
-            # OCR.Space Engine 2 supports automatic language detection and
-            # can read mixed Russian/Chinese/Latin text in the same line.
-            if self._personal_messages(fallback):
-                return fallback, f"OCR.Space Auto ({variant_name})"
-            # Keep any non-empty fallback text as a candidate for diagnostics.
-            if fallback and len(fallback.strip()) > 2:
-                return fallback, f"OCR.Space Auto ({variant_name})"
+            if fallback:
+                if not fallback_best:
+                    fallback_best = fallback
+                personal = self._personal_messages(fallback)
+                if personal:
+                    player, message = personal[0]
+                    return (
+                        f"Лично {player} шепчет: {message}",
+                        f"OCR.Space Auto ({variant_name})"
+                    )
+
+        if fallback_best and len(fallback_best.strip()) > 1:
+            return fallback_best, "OCR.Space Auto"
 
         return best_text, best_engine
 
