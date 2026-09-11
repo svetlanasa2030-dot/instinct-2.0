@@ -21,25 +21,34 @@ class TelegramWatcher:
         self.stop_event = __import__("threading").Event()
         self.seen = set()
         self.last_results = []
-        self.ocr = None
+        # Two recognition models are used because the fixed chat words are
+        # Cyrillic while the player name may be Chinese, Latin, Cyrillic,
+        # digits or mixed. PP-OCRv5 provides dedicated models for these
+        # scripts; no whitelist is applied to the extracted nickname.
+        self.ocr_cyrillic = None
+        self.ocr_chinese = None
         if RapidOCR:
-            try:
-                self.ocr = RapidOCR(params={
-                    "Det.engine_type": EngineType.ONNXRUNTIME,
-                    "Det.lang_type": LangDet.CH,
-                    "Det.model_type": ModelType.MOBILE,
-                    "Det.ocr_version": OCRVersion.PPOCRV5,
-                    "Rec.engine_type": EngineType.ONNXRUNTIME,
-                    "Rec.lang_type": LangRec.CYRILLIC,
-                    "Rec.model_type": ModelType.MOBILE,
-                    "Rec.ocr_version": OCRVersion.PPOCRV5,
-                    "Cls.engine_type": EngineType.ONNXRUNTIME,
-                    "Cls.lang_type": LangDet.CH,
-                    "Cls.model_type": ModelType.MOBILE,
-                    "Cls.ocr_version": OCRVersion.PPOCRV4,
-                })
-            except Exception:
-                self.ocr = None
+            self.ocr_cyrillic = self._create_ocr(LangRec.CYRILLIC)
+            self.ocr_chinese = self._create_ocr(LangRec.CH)
+
+    def _create_ocr(self, language):
+        try:
+            return RapidOCR(params={
+                "Det.engine_type": EngineType.ONNXRUNTIME,
+                "Det.lang_type": LangDet.CH,
+                "Det.model_type": ModelType.MOBILE,
+                "Det.ocr_version": OCRVersion.PPOCRV5,
+                "Rec.engine_type": EngineType.ONNXRUNTIME,
+                "Rec.lang_type": language,
+                "Rec.model_type": ModelType.MOBILE,
+                "Rec.ocr_version": OCRVersion.PPOCRV5,
+                "Cls.engine_type": EngineType.ONNXRUNTIME,
+                "Cls.lang_type": LangDet.CH,
+                "Cls.model_type": ModelType.MOBILE,
+                "Cls.ocr_version": OCRVersion.PPOCRV5,
+            })
+        except Exception:
+            return None
 
     def set_credentials(self, token, chat_id):
         self.token = token.strip()
@@ -209,11 +218,13 @@ class TelegramWatcher:
         score -= replacement_noise * 8.0
         return score
 
-    def _run_rapidocr(self, image):
-        if not self.ocr:
+    def _run_rapidocr(self, image, engine=None):
+        if engine is None:
+            engine = self.ocr_cyrillic
+        if not engine:
             return "", 0.0
         try:
-            result = self.ocr(image)
+            result = engine(image)
             if result is None:
                 return "", 0.0
             if hasattr(result, "txts"):
@@ -232,27 +243,90 @@ class TelegramWatcher:
                             scores.append(float(item[2]))
                         except (TypeError, ValueError):
                             pass
-                return "\n".join(parts), (sum(scores)/len(scores) if scores else 0.0)
+                return "\n".join(parts), (sum(scores) / len(scores) if scores else 0.0)
         except Exception:
             return "", 0.0
         return "", 0.0
 
+    @staticmethod
+    def _has_cjk(text):
+        return any(
+            "\u3400" <= ch <= "\u4dbf" or "\u4e00" <= ch <= "\u9fff"
+            or "\u3040" <= ch <= "\u30ff"
+            for ch in text
+        )
+
+    @classmethod
+    def _merge_multilingual_nickname(cls, cyr_text, ch_text):
+        """Use Cyrillic OCR for the fixed Russian markers and Chinese OCR
+        when the nickname itself contains CJK characters.
+        """
+        base = cls._personal_messages(cyr_text)
+        if not base:
+            return cls._personal_messages(ch_text)
+
+        player, message = base[0]
+
+        # Chinese/Japanese OCR can read a CJK nickname even when the
+        # Cyrillic model cannot. Prefer the CJK run only for the nickname;
+        # never alter the message body.
+        ch_lines = [x.strip() for x in ch_text.splitlines() if x.strip()]
+        for line in ch_lines:
+            if cls._has_cjk(line):
+                runs = []
+                current = []
+                for ch in line:
+                    if ("\u3400" <= ch <= "\u4dbf") or ("\u4e00" <= ch <= "\u9fff") or ("\u3040" <= ch <= "\u30ff"):
+                        current.append(ch)
+                    elif current:
+                        runs.append("".join(current))
+                        current = []
+                if current:
+                    runs.append("".join(current))
+                if runs:
+                    # A player name is normally the first CJK run on the line.
+                    player = runs[0]
+                    break
+
+        return [(player, message)]
+
     def recognize(self, image):
-        """Russian game-chat OCR: dedicated Cyrillic model first, OCR.Space fallback."""
+        """Multilingual game-chat OCR.
+
+        Fixed words «Лично»/«шепчет» are recognized with the Cyrillic model.
+        The nickname is additionally checked with the Chinese/English model,
+        so a name such as 剑奇卡, Player_X7 or mixed text is not forced through
+        a Russian-only dictionary. No nickname whitelist or character
+        substitution is applied.
+        """
         best_text = ""
         best_score = -100000.0
         best_engine = "OCR не распознал текст"
         variants = self._ocr_variants(image)
 
         for variant_name, variant in variants:
-            text, confidence = self._run_rapidocr(variant)
-            score = self._score_ocr(text, confidence)
-            if score > best_score:
-                best_text, best_score = text, score
-                best_engine = f"RapidOCR Cyrillic ({variant_name})"
-            if "Лично" in text and confidence >= 0.55:
-                return text, f"RapidOCR Cyrillic ({variant_name})"
+            cyr_text, cyr_conf = self._run_rapidocr(variant, self.ocr_cyrillic)
+            ch_text, ch_conf = self._run_rapidocr(variant, self.ocr_chinese)
 
+            score = self._score_ocr(cyr_text, cyr_conf)
+            if score > best_score:
+                best_text, best_score = cyr_text, score
+                best_engine = f"RapidOCR Cyrillic + Chinese ({variant_name})"
+
+            # The fixed Russian markers are the authoritative signal that a
+            # line is a personal whisper.
+            if "Лично" in cyr_text and "шепчет" in cyr_text and cyr_conf >= 0.45:
+                merged = self._merge_multilingual_nickname(cyr_text, ch_text)
+                if merged:
+                    # Return a normalized two-line OCR representation so the
+                    # existing Telegram parser can use it unchanged.
+                    player, message = merged[0]
+                    return (
+                        f"Лично {player} шепчет: {message}",
+                        f"RapidOCR multilingual ({variant_name})"
+                    )
+
+        # OCR.Space Russian remains the network fallback.
         for variant_name, variant in variants:
             fallback = self._ocr_space(variant)
             score = self._score_ocr(fallback, 0.0)
