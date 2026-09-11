@@ -1,23 +1,21 @@
 import threading
-import time
 import tkinter as tk
 from tkinter import messagebox, ttk
-
 import pyautogui
 
 
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("Instinct 2.0 — Screen Point Automator")
+        self.root.title("Instinct 2.0 — Point Automator")
         self.root.resizable(False, False)
         self.stop_event = threading.Event()
         self.worker = None
+        self.x = None
+        self.y = None
 
-        self.x_var = tk.StringVar(value="500")
-        self.y_var = tk.StringVar(value="500")
         self.interval_var = tk.StringVar(value="60")
-        self.status_var = tk.StringVar(value="Готово")
+        self.status_var = tk.StringVar(value="Сначала укажите точку на экране")
 
         frame = ttk.Frame(root, padding=18)
         frame.grid()
@@ -26,19 +24,20 @@ class App:
             row=0, column=0, columnspan=2, pady=(0, 14)
         )
 
-        ttk.Label(frame, text="X координата:").grid(row=1, column=0, sticky="w", pady=5)
-        ttk.Entry(frame, textvariable=self.x_var, width=14).grid(row=1, column=1, sticky="w")
+        ttk.Button(frame, text="Указать точку на экране", command=self.select_point).grid(
+            row=1, column=0, columnspan=2, pady=6, sticky="ew"
+        )
 
-        ttk.Label(frame, text="Y координата:").grid(row=2, column=0, sticky="w", pady=5)
-        ttk.Entry(frame, textvariable=self.y_var, width=14).grid(row=2, column=1, sticky="w")
+        self.point_label = ttk.Label(frame, text="Точка: не выбрана")
+        self.point_label.grid(row=2, column=0, columnspan=2, pady=6)
 
-        ttk.Label(frame, text="Интервал, сек:").grid(row=3, column=0, sticky="w", pady=5)
+        ttk.Label(frame, text="Интервал, сек:").grid(row=3, column=0, sticky="w", pady=6)
         ttk.Entry(frame, textvariable=self.interval_var, width=14).grid(row=3, column=1, sticky="w")
 
         ttk.Label(
             frame,
-            text="Цикл: клик по X,Y → ↑ → Enter → 3 сек → Enter",
-        ).grid(row=4, column=0, columnspan=2, pady=(10, 5))
+            text="В выбранной точке: ↑ → Enter → 3 сек → Enter",
+        ).grid(row=4, column=0, columnspan=2, pady=(10, 6))
 
         buttons = ttk.Frame(frame)
         buttons.grid(row=5, column=0, columnspan=2, pady=12)
@@ -48,7 +47,7 @@ class App:
         self.stop_btn.grid(row=0, column=1, padx=5)
 
         ttk.Label(frame, textvariable=self.status_var).grid(
-            row=6, column=0, columnspan=2, pady=(4, 0)
+            row=6, column=0, columnspan=2, pady=4
         )
         ttk.Label(frame, text="F8 — запуск / остановка").grid(
             row=7, column=0, columnspan=2, pady=(10, 0)
@@ -56,36 +55,57 @@ class App:
 
         self.root.bind("<F8>", lambda _event: self.toggle())
 
+    def select_point(self):
+        if self.worker and self.worker.is_alive():
+            return
+
+        self.root.withdraw()
+        selector = tk.Toplevel()
+        selector.attributes("-fullscreen", True)
+        selector.attributes("-topmost", True)
+        selector.attributes("-alpha", 0.25)
+        selector.configure(bg="black")
+        selector.config(cursor="crosshair")
+
+        def choose(event):
+            self.x, self.y = event.x, event.y
+            selector.destroy()
+            self.root.deiconify()
+            self.point_label.config(text=f"Точка: X={self.x}, Y={self.y}")
+            self.status_var.set("Точка выбрана. Можно запускать.")
+
+        selector.bind("<Button-1>", choose)
+        selector.bind("<Escape>", lambda _event: (selector.destroy(), self.root.deiconify()))
+        selector.focus_force()
+
     def validate(self):
+        if self.x is None or self.y is None:
+            raise ValueError("Сначала нажмите «Указать точку на экране».")
         try:
-            x = int(self.x_var.get())
-            y = int(self.y_var.get())
             interval = float(self.interval_var.get())
         except ValueError:
-            raise ValueError("X, Y и интервал должны быть числами.")
-
-        width, height = pyautogui.size()
-        if not (0 <= x < width and 0 <= y < height):
-            raise ValueError(f"Координаты должны быть в пределах экрана: 0..{width-1}, 0..{height-1}.")
+            raise ValueError("Интервал должен быть числом.")
         if interval < 0:
             raise ValueError("Интервал не может быть отрицательным.")
-        return x, y, interval
+        return interval
 
     def start(self):
         if self.worker and self.worker.is_alive():
             return
         try:
-            x, y, interval = self.validate()
+            interval = self.validate()
         except ValueError as exc:
             messagebox.showerror("Ошибка", str(exc))
             return
 
         self.stop_event.clear()
-        self.worker = threading.Thread(target=self.run_loop, args=(x, y, interval), daemon=True)
+        self.worker = threading.Thread(
+            target=self.run_loop, args=(self.x, self.y, interval), daemon=True
+        )
         self.worker.start()
         self.start_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
-        self.status_var.set(f"Запущено: ({x}, {y})")
+        self.status_var.set(f"Запущено: X={self.x}, Y={self.y}")
 
     def stop(self):
         self.stop_event.set()
@@ -110,7 +130,7 @@ class App:
                     break
 
                 pyautogui.press("enter")
-                self.root.after(0, self.status_var.set, f"Выполнено: ({x}, {y})")
+                self.root.after(0, self.status_var.set, f"Выполнено в ({x}, {y})")
 
                 if self.stop_event.wait(interval):
                     break
