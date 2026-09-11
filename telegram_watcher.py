@@ -48,36 +48,51 @@ class TelegramWatcher:
 
     @staticmethod
     def _personal_messages(text):
+        # OCR.Space can wrap the marker in brackets, e.g. "(Лично )".
+        # Search for the marker anywhere in the line and remove OCR-only
+        # punctuation before parsing the player and message.
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         messages = []
         i = 0
+
         while i < len(lines):
             line = lines[i]
-            if not line.startswith("Лично"):
+            marker = line.find("Лично")
+            if marker < 0:
                 i += 1
                 continue
 
-            payload = line[len("Лично"):].strip()
+            payload = line[marker + len("Лично"):].strip()
+            payload = payload.lstrip(" )]}:;-—–")
+
+            # OCR sometimes puts the personal marker on a separate line.
             if not payload:
                 i += 1
                 continue
 
-            if " шепчет:" in payload:
-                player, message = payload.split(" шепчет:", 1)
+            # Normal game format: "Игрок шепчет: сообщение"
+            whisper = " шепчет:"
+            if whisper in payload:
+                player, message = payload.split(whisper, 1)
+            elif "шепчет:" in payload:
+                player, message = payload.split("шепчет:", 1)
             elif ":" in payload:
                 player, message = payload.split(":", 1)
             else:
-                player, message = payload, ""
-                if i + 1 < len(lines):
-                    message = lines[i + 1].strip()
+                # If OCR split the message over two lines, join the next line.
+                player = payload
+                message = lines[i + 1].strip() if i + 1 < len(lines) else ""
+                if message:
                     i += 1
 
-            player = player.strip()
+            player = player.strip(" ()[]{}:;-—–")
             message = message.strip()
 
             if player and message:
                 messages.append((player, message))
+
             i += 1
+
         return messages
 
     @classmethod
