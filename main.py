@@ -15,7 +15,7 @@ class App:
         self.y = None
 
         self.interval_var = tk.StringVar(value="60")
-        self.status_var = tk.StringVar(value="Сначала укажите точку на экране")
+        self.status_var = tk.StringVar(value="Готово")
 
         frame = ttk.Frame(root, padding=18)
         frame.grid()
@@ -72,7 +72,7 @@ class App:
             selector.destroy()
             self.root.deiconify()
             self.point_label.config(text=f"Точка: X={self.x}, Y={self.y}")
-            self.status_var.set("Точка выбрана. Можно запускать.")
+            self.status_var.set(f"Точка выбрана: X={self.x}, Y={self.y}")
 
         selector.bind("<Button-1>", choose)
         selector.bind("<Escape>", lambda _event: (selector.destroy(), self.root.deiconify()))
