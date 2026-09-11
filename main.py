@@ -156,8 +156,8 @@ class App:
                 image = pyautogui.screenshot(region=(x, y, w, h))
                 text, ocr_engine = self.telegram.recognize(image)
                 ok, status = self.telegram.process_ocr_text(text)
-                    if status:
-                        self.root.after(0, self.status_var.set, f"Telegram: {status}")
+                if status:
+                    self.root.after(0, self.status_var.set, f"Telegram: {status}")
             except Exception:
                 continue
 
@@ -168,10 +168,7 @@ class App:
         x, y, w, h = self.telegram.region
         try:
             image = pyautogui.screenshot(region=(x, y, w, h))
-            text = ""
-            if self.telegram.ocr:
-                result, _ = self.telegram.ocr(image)
-                text = "\n".join(item[1] for item in result) if result else ""
+            text, ocr_engine = self.telegram.recognize(image)
             is_new, new_status = self.telegram.check_new_message(text)
             self.status_var.set(f"Проверка чата: {new_status}")
             viewer = tk.Toplevel(self.root)
