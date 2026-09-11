@@ -18,6 +18,7 @@ class App:
         self.telegram = TelegramWatcher()
         self.telegram_thread = None
         self.telegram_stop = threading.Event()
+        self.telegram_log = []
 
         self.interval_var = tk.StringVar(value="5")
         self.status_var = tk.StringVar(value="Готово")
@@ -49,19 +50,20 @@ class App:
         ttk.Button(frame, text="Проверить Telegram", command=self.test_telegram).grid(row=5, column=0, columnspan=2, pady=6, sticky="ew")
         ttk.Button(frame, text="Выбрать область чата", command=self.select_chat_region).grid(row=6, column=0, columnspan=2, pady=6, sticky="ew")
         ttk.Button(frame, text="Проверить область чата", command=self.check_chat_region).grid(row=7, column=0, columnspan=2, pady=6, sticky="ew")
+        ttk.Button(frame, text="Журнал Telegram", command=self.show_telegram_log).grid(row=8, column=0, columnspan=2, pady=6, sticky="ew")
         buttons = ttk.Frame(frame)
-        buttons.grid(row=8, column=0, columnspan=2, pady=12)
+        buttons.grid(row=9, column=0, columnspan=2, pady=12)
         self.start_btn = ttk.Button(buttons, text="Старт", command=self.start)
         self.start_btn.grid(row=0, column=0, padx=5)
         self.stop_btn = ttk.Button(buttons, text="Стоп", command=self.stop, state="disabled")
         self.stop_btn.grid(row=0, column=1, padx=5)
 
-        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=9, column=0, columnspan=2, pady=(4, 2))
+        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=10, column=0, columnspan=2, pady=(4, 2))
         ttk.Label(frame, textvariable=self.status_var).grid(
-            row=10, column=0, columnspan=2, pady=4
+            row=11, column=0, columnspan=2, pady=4
         )
         ttk.Label(frame, text="F8 — запуск / остановка").grid(
-            row=11, column=0, columnspan=2, pady=(10, 0)
+            row=12, column=0, columnspan=2, pady=(10, 0)
         )
 
         self.root.bind("<F8>", lambda _event: self.toggle())
@@ -148,7 +150,9 @@ class App:
         self.telegram_thread.start()
 
     def telegram_loop(self):
-        while not self.telegram_stop.wait(1):
+        # Chat is checked exactly every 3 seconds. Point automation has its
+        # own independent worker and is intentionally not touched here.
+        while not self.telegram_stop.wait(3):
             if not self.telegram.region:
                 continue
             x, y, w, h = self.telegram.region
@@ -156,10 +160,39 @@ class App:
                 image = pyautogui.screenshot(region=(x, y, w, h))
                 text, ocr_engine = self.telegram.recognize(image)
                 ok, status = self.telegram.process_ocr_text(text)
-                if status:
-                    self.root.after(0, self.status_var.set, f"Telegram: {status}")
-            except Exception:
-                continue
+                messages = self.telegram.extract_personal_all(text)
+
+                if messages:
+                    for player, message in messages:
+                        key = f"{player}\\n{message}"
+                        if key in self.telegram.seen:
+                            event = f"ПОВТОР — {player}: {message}"
+                        else:
+                            event = f"{status or 'НЕ ОТПРАВЛЕНО'} — {player}: {message}"
+                        self.root.after(0, self.add_telegram_log, event)
+                    self.root.after(0, self.status_var.set,
+                                     f"Чат: найдено {len(messages)} личных сообщений | {status or 'без новых'}")
+                else:
+                    self.root.after(0, self.status_var.set, "Чат: новых личных сообщений нет")
+            except Exception as exc:
+                self.root.after(0, self.status_var.set, f"Чат: ошибка — {exc}")
+
+    def add_telegram_log(self, message):
+        stamp = time.strftime("%H:%M:%S")
+        entry = f"{stamp}  {message}"
+        self.telegram_log.append(entry)
+        # Keep the in-memory journal bounded.
+        if len(self.telegram_log) > 300:
+            del self.telegram_log[:-300]
+
+    def show_telegram_log(self):
+        win = tk.Toplevel(self.root)
+        win.title("Журнал Telegram")
+        win.geometry("720x420")
+        box = tk.Text(win, wrap="word")
+        box.pack(fill="both", expand=True, padx=10, pady=10)
+        box.insert("1.0", "\n".join(self.telegram_log) or "Журнал пока пуст.")
+        box.configure(state="disabled")
 
     def check_chat_region(self):
         if not self.telegram.region:
@@ -176,6 +209,7 @@ class App:
             viewer.geometry("760x620")
             ttk.Label(viewer, text=f"Координаты: X={x}, Y={y}, W={w}, H={h}").pack(pady=8)
             ttk.Label(viewer, text=f"Новое сообщение: {'ДА' if is_new else 'НЕТ'}", font=("Segoe UI", 11, "bold")).pack(pady=(0, 4))
+            ttk.Label(viewer, text=new_status).pack(pady=(0, 4))
             ttk.Label(viewer, text=f"OCR: {ocr_engine}").pack(pady=(0, 8))
             box = tk.Text(viewer, wrap="word")
             box.pack(fill="both", expand=True, padx=10, pady=10)
