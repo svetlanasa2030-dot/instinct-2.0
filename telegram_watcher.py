@@ -104,6 +104,32 @@ class TelegramWatcher:
     def extract_personal_all(cls, text):
         return cls._personal_messages(text)
 
+    def _ocr_space(self, image):
+        """OCR.Space fallback for the selected chat image."""
+        try:
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            response = requests.post(
+                "https://api.ocr.space/parse/image",
+                files={"file": ("chat.png", buf.getvalue(), "image/png")},
+                data={
+                    "apikey": self.ocrspace_key,
+                    "language": "rus",
+                    "OCREngine": "2",
+                    "isOverlayRequired": "false",
+                    "scale": "true",
+                    "detectOrientation": "true",
+                },
+                timeout=20,
+            )
+            if not response.ok:
+                return ""
+            data = response.json()
+            parsed = data.get("ParsedResults") or []
+            return "\n".join(p.get("ParsedText", "") for p in parsed).strip()
+        except (requests.RequestException, ValueError, OSError):
+            return ""
+
     def _ocr_variants(self, image):
         """Prepare several chat-specific images for OCR.
         The game uses small orange/white text on a dark background, so keeping
