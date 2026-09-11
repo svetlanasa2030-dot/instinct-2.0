@@ -30,10 +30,18 @@ class TelegramWatcher:
         if RapidOCR:
             self.ocr_cyrillic = self._create_ocr(LangRec.CYRILLIC)
             self.ocr_chinese = self._create_ocr(LangRec.CH)
+        self.ocr_init_status = (
+            "RapidOCR: Cyrillic + Chinese"
+            if (self.ocr_cyrillic or self.ocr_chinese)
+            else "RapidOCR не загрузился — используется OCR.Space"
+        )
 
     def _create_ocr(self, language):
         try:
             return RapidOCR(params={
+                # The game chat is horizontal; disabling orientation classification
+                # avoids loading an unnecessary model and makes startup more reliable.
+                "Global.use_cls": False,
                 "Det.engine_type": EngineType.ONNXRUNTIME,
                 "Det.lang_type": LangDet.CH,
                 "Det.model_type": ModelType.MOBILE,
@@ -42,10 +50,6 @@ class TelegramWatcher:
                 "Rec.lang_type": language,
                 "Rec.model_type": ModelType.MOBILE,
                 "Rec.ocr_version": OCRVersion.PPOCRV5,
-                "Cls.engine_type": EngineType.ONNXRUNTIME,
-                "Cls.lang_type": LangDet.CH,
-                "Cls.model_type": ModelType.MOBILE,
-                "Cls.ocr_version": OCRVersion.PPOCRV5,
             })
         except Exception:
             return None
@@ -154,6 +158,8 @@ class TelegramWatcher:
             if not response.ok:
                 return ""
             data = response.json()
+            if data.get("IsErroredOnProcessing"):
+                return ""
             parsed = data.get("ParsedResults") or []
             return "\n".join(p.get("ParsedText", "") for p in parsed).strip()
         except (requests.RequestException, ValueError, OSError):
