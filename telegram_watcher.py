@@ -19,6 +19,7 @@ class TelegramWatcher:
         self.ocrspace_key = (ocrspace_key or os.getenv("OCRSPACE_API_KEY", "helloworld")).strip()
         self.stop_event = __import__("threading").Event()
         self.seen = set()
+        self.last_results = []
         self.ocr = RapidOCR() if RapidOCR else None
 
     def set_credentials(self, token, chat_id):
@@ -258,16 +259,25 @@ class TelegramWatcher:
     def process_ocr_text(self, text):
         statuses = []
         sent_any = False
+        self.last_results = []
+
         for player, message in self.extract_personal_all(text):
             key = f"{player}\n{message}"
             if key in self.seen:
-                statuses.append("ПОВТОР — не отправлено")
+                status = "ПОВТОР — не отправлено"
+                statuses.append(status)
+                self.last_results.append((player, message, False, status))
                 continue
+
             ok, status = self._send(f"Игрок: {player}\nСообщение: {message}")
             statuses.append(status)
+            self.last_results.append((player, message, ok, status))
+
+            # Mark as processed only after Telegram confirms delivery.
             if ok:
                 self.seen.add(key)
                 sent_any = True
+
         if not statuses:
             return False, None
         return sent_any, statuses[-1]
