@@ -180,7 +180,7 @@ class App:
         selector.bind("<Escape>", lambda _e: (selector.destroy(), self.root.deiconify()))
         selector.focus_force()
 
-    def    def start_telegram(self):
+    def start_telegram(self):
         if self.telegram_thread and self.telegram_thread.is_alive():
             return
         self.telegram_stop.clear()
