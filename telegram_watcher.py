@@ -43,7 +43,7 @@ class TelegramWatcher:
                 # avoids loading an unnecessary model and makes startup more reliable.
                 "Global.use_cls": False,
                 "Det.engine_type": EngineType.ONNXRUNTIME,
-                "Det.lang_type": LangDet.MULTI,
+                "Det.lang_type": LangDet.CH,
                 "Det.model_type": ModelType.MOBILE,
                 "Det.ocr_version": OCRVersion.PPOCRV5,
                 "Rec.engine_type": EngineType.ONNXRUNTIME,
