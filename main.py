@@ -101,16 +101,41 @@ class App:
         selector.attributes("-alpha", 0.25)
         selector.configure(bg="black")
         selector.config(cursor="crosshair")
+
+        canvas = tk.Canvas(selector, bg="black", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+
         start = {}
+        rect = None
+
         def press(event):
+            nonlocal rect
             start["x"], start["y"] = event.x, event.y
+            if rect is not None:
+                canvas.delete(rect)
+            rect = canvas.create_rectangle(
+                event.x, event.y, event.x, event.y,
+                outline="red", width=3
+            )
+
+        def drag(event):
+            nonlocal rect
+            if "x" not in start:
+                return
+            canvas.coords(rect, start["x"], start["y"], event.x, event.y)
+
         def release(event):
             if "x" in start:
                 x1, y1 = start["x"], start["y"]
-                self.telegram.set_region((min(x1,event.x), min(y1,event.y), abs(event.x-x1), abs(event.y-y1)))
+                self.telegram.set_region((
+                    min(x1, event.x), min(y1, event.y),
+                    abs(event.x - x1), abs(event.y - y1)
+                ))
             selector.destroy()
             self.root.deiconify()
+
         selector.bind("<ButtonPress-1>", press)
+        selector.bind("<B1-Motion>", drag)
         selector.bind("<ButtonRelease-1>", release)
         selector.bind("<Escape>", lambda _e: (selector.destroy(), self.root.deiconify()))
         selector.focus_force()
