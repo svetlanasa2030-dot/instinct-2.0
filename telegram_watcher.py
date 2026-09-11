@@ -273,19 +273,27 @@ class TelegramWatcher:
         ch_lines = [x.strip() for x in ch_text.splitlines() if x.strip()]
         for line in ch_lines:
             if cls._has_cjk(line):
-                runs = []
-                current = []
+                # Pick the token containing CJK/Japanese characters and
+                # keep adjacent letters, digits and symbols such as _ or ★.
+                import unicodedata
+                tokens = []
+                token = []
                 for ch in line:
-                    if ("\u3400" <= ch <= "\u4dbf") or ("\u4e00" <= ch <= "\u9fff") or ("\u3040" <= ch <= "\u30ff"):
-                        current.append(ch)
-                    elif current:
-                        runs.append("".join(current))
-                        current = []
-                if current:
-                    runs.append("".join(current))
-                if runs:
-                    # A player name is normally the first CJK run on the line.
-                    player = runs[0]
+                    cat = unicodedata.category(ch)
+                    if ch.isspace() or cat.startswith("P"):
+                        if token:
+                            tokens.append("".join(token))
+                            token = []
+                    else:
+                        token.append(ch)
+                if token:
+                    tokens.append("".join(token))
+
+                for token in tokens:
+                    if cls._has_cjk(token):
+                        player = token.strip()
+                        break
+                if player and cls._has_cjk(player):
                     break
 
         return [(player, message)]
