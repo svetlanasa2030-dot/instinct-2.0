@@ -3,6 +3,7 @@ import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 import pyautogui
+from telegram_watcher import TelegramWatcher
 
 
 class App:
@@ -14,6 +15,9 @@ class App:
         self.worker = None
         self.x = None
         self.y = None
+        self.telegram = TelegramWatcher()
+        self.telegram_thread = None
+        self.telegram_stop = threading.Event()
 
         self.interval_var = tk.StringVar(value="5")
         self.status_var = tk.StringVar(value="Готово")
@@ -41,23 +45,95 @@ class App:
             text="В выбранной точке: ↑ → Enter → 3 сек → Enter",
         ).grid(row=4, column=0, columnspan=2, pady=(10, 6))
 
+        ttk.Button(frame, text="Настроить Telegram", command=self.configure_telegram).grid(row=4, column=0, columnspan=2, pady=6, sticky="ew")
+        ttk.Button(frame, text="Проверить Telegram", command=self.test_telegram).grid(row=5, column=0, columnspan=2, pady=6, sticky="ew")
+        ttk.Button(frame, text="Выбрать область чата", command=self.select_chat_region).grid(row=6, column=0, columnspan=2, pady=6, sticky="ew")
         buttons = ttk.Frame(frame)
-        buttons.grid(row=5, column=0, columnspan=2, pady=12)
+        buttons.grid(row=7, column=0, columnspan=2, pady=12)
         self.start_btn = ttk.Button(buttons, text="Старт", command=self.start)
         self.start_btn.grid(row=0, column=0, padx=5)
         self.stop_btn = ttk.Button(buttons, text="Стоп", command=self.stop, state="disabled")
         self.stop_btn.grid(row=0, column=1, padx=5)
 
-        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=6, column=0, columnspan=2, pady=(4, 2))
+        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=8, column=0, columnspan=2, pady=(4, 2))
         ttk.Label(frame, textvariable=self.status_var).grid(
-            row=7, column=0, columnspan=2, pady=4
+            row=9, column=0, columnspan=2, pady=4
         )
         ttk.Label(frame, text="F8 — запуск / остановка").grid(
-            row=8, column=0, columnspan=2, pady=(10, 0)
+            row=10, column=0, columnspan=2, pady=(10, 0)
         )
 
         self.root.bind("<F8>", lambda _event: self.toggle())
+        self.root.after(500, self.start_telegram)
 
+    def configure_telegram(self):
+        win = tk.Toplevel(self.root)
+        win.title("Настроить Telegram")
+        frame = ttk.Frame(win, padding=14)
+        frame.grid()
+        token_var = tk.StringVar(value=self.telegram.token)
+        chat_var = tk.StringVar(value=self.telegram.chat_id)
+        ttk.Label(frame, text="Bot Token:").grid(row=0, column=0, sticky="w", pady=5)
+        ttk.Entry(frame, textvariable=token_var, width=42, show="*").grid(row=0, column=1, pady=5)
+        ttk.Label(frame, text="Chat ID:").grid(row=1, column=0, sticky="w", pady=5)
+        ttk.Entry(frame, textvariable=chat_var, width=42).grid(row=1, column=1, pady=5)
+        def save():
+            self.telegram.set_credentials(token_var.get(), chat_var.get())
+            self.status_var.set("Telegram сохранён")
+            win.destroy()
+        ttk.Button(frame, text="Сохранить", command=save).grid(row=2, column=0, columnspan=2, pady=10)
+
+    def test_telegram(self):
+        if not self.telegram.token or not self.telegram.chat_id:
+            messagebox.showerror("Telegram", "Укажите Bot Token и Chat ID.")
+            return
+        ok, status = self.telegram.check_telegram()
+        self.status_var.set(status)
+        if not ok:
+            messagebox.showerror("Telegram", status)
+
+    def select_chat_region(self):
+        self.root.withdraw()
+        selector = tk.Toplevel()
+        selector.attributes("-fullscreen", True)
+        selector.attributes("-topmost", True)
+        selector.attributes("-alpha", 0.25)
+        selector.configure(bg="black")
+        selector.config(cursor="crosshair")
+        start = {}
+        def press(event):
+            start["x"], start["y"] = event.x, event.y
+        def release(event):
+            if "x" in start:
+                x1, y1 = start["x"], start["y"]
+                self.telegram.set_region((min(x1,event.x), min(y1,event.y), abs(event.x-x1), abs(event.y-y1)))
+            selector.destroy()
+            self.root.deiconify()
+        selector.bind("<ButtonPress-1>", press)
+        selector.bind("<ButtonRelease-1>", release)
+        selector.bind("<Escape>", lambda _e: (selector.destroy(), self.root.deiconify()))
+        selector.focus_force()
+
+    def start_telegram(self):
+        if self.telegram_thread and self.telegram_thread.is_alive():
+            return
+        self.telegram_stop.clear()
+        self.telegram_thread = threading.Thread(target=self.telegram_loop, daemon=True)
+        self.telegram_thread.start()
+
+    def telegram_loop(self):
+        while not self.telegram_stop.wait(1):
+            if not self.telegram.region:
+                continue
+            x, y, w, h = self.telegram.region
+            try:
+                image = pyautogui.screenshot(region=(x, y, w, h))
+                if self.telegram.ocr:
+                    result, _ = self.telegram.ocr(image)
+                    text = "\n".join(item[1] for item in result) if result else ""
+                    self.telegram.process_ocr_text(text)
+            except Exception:
+                continue
     def select_point(self):
         if self.worker and self.worker.is_alive():
             return
