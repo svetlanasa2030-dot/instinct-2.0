@@ -1,5 +1,20 @@
 import threading
 import time
+import sys
+
+# Make Tkinter mouse coordinates use the same physical pixels as PyAutoGUI.
+# Without DPI awareness, Windows scaling (125%/150%/175%) can make a
+# correctly selected chat area point to a different part of the screen.
+if sys.platform == "win32":
+    try:
+        import ctypes
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor DPI aware
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 import tkinter as tk
 from tkinter import messagebox, ttk
 import pyautogui
@@ -157,7 +172,7 @@ class App:
                 continue
             x, y, w, h = self.telegram.region
             try:
-                image = pyautogui.screenshot(region=(x, y, w, h))
+                image = pyautogui.screenshot(region=(int(x), int(y), int(w), int(h)))
                 text, ocr_engine = self.telegram.recognize(image)
                 ok, status = self.telegram.process_ocr_text(text)
                 messages = self.telegram.extract_personal_all(text)
@@ -196,7 +211,9 @@ class App:
             return
         x, y, w, h = self.telegram.region
         try:
-            image = pyautogui.screenshot(region=(x, y, w, h))
+            # PyAutoGUI uses physical screen pixels. The app is made
+            # per-monitor-DPI-aware above so these saved coordinates match.
+            image = pyautogui.screenshot(region=(int(x), int(y), int(w), int(h)))
             text, ocr_engine = self.telegram.recognize(image)
             is_new, new_status = self.telegram.check_new_message(text)
             self.status_var.set(f"Проверка чата: {new_status}")
