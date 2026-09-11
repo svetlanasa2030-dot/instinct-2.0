@@ -8,7 +8,7 @@ import pyautogui
 class App:
     def __init__(self, root):
         self.root = root
-        self.root.title("Instinct 2.0 — Point Automator")
+        self.root.title("Instinct 2.0")
         self.root.resizable(False, False)
         self.stop_event = threading.Event()
         self.worker = None
