@@ -104,49 +104,84 @@ class TelegramWatcher:
     def extract_personal_all(cls, text):
         return cls._personal_messages(text)
 
-    def recognize(self, image):
-        """RapidOCR first; OCR.Space Russian fallback when local OCR is unusable."""
-        local_text = ""
-        if self.ocr:
-            try:
-                result, _ = self.ocr(image)
-                local_text = "\n".join(item[1] for item in result) if result else ""
-            except Exception:
-                local_text = ""
-
-        # If the local model loses Cyrillic markers such as «Лично», use OCR.Space.
-        if local_text and "Лично" in local_text:
-            return local_text, "RapidOCR"
-
-        fallback = self._ocr_space(image)
-        if fallback:
-            return fallback, "OCR.Space"
-        return local_text, "RapidOCR" if local_text else "OCR не распознал текст"
-
-    def _ocr_space(self, image):
+    def _ocr_variants(self, image):
+        """Create enlarged/contrast variants without changing the characters."""
+        variants = [image]
         try:
-            buf = io.BytesIO()
-            image.save(buf, format="PNG")
-            response = requests.post(
-                "https://api.ocr.space/parse/image",
-                files={"file": ("chat.png", buf.getvalue(), "image/png")},
-                data={
-                    "apikey": self.ocrspace_key,
-                    "language": "rus",
-                    "OCREngine": "2",
-                    "isOverlayRequired": "false",
-                    "scale": "true",
-                    "detectOrientation": "true",
-                },
-                timeout=20,
+            import cv2
+            import numpy as np
+
+            rgb = np.array(image)
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+            # Game chat font is small, so enlarge it before OCR.
+            up = cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+            up = cv2.GaussianBlur(up, (3, 3), 0)
+            sharp = cv2.addWeighted(
+                cv2.resize(gray, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC),
+                1.6, up, -0.6, 0
             )
-            if not response.ok:
-                return ""
-            data = response.json()
-            parsed = data.get("ParsedResults") or []
-            return "\n".join(p.get("ParsedText", "") for p in parsed).strip()
-        except (requests.RequestException, ValueError, OSError):
-            return ""
+
+            # Keep several versions because colored chat text can disappear
+            # with a single threshold. No character whitelist is applied.
+            _, binary = cv2.threshold(sharp, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            variants.extend([
+                Image.fromarray(cv2.cvtColor(
+                    cv2.resize(bgr, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC),
+                    cv2.COLOR_BGR2RGB
+                )),
+                Image.fromarray(sharp),
+                Image.fromarray(binary),
+            ])
+        except Exception:
+            pass
+        return variants
+
+    @staticmethod
+    def _score_ocr(text):
+        if not text:
+            return -100000
+        score = len(text)
+        if "Лично" in text:
+            score += 10000
+        # Prefer text containing Cyrillic instead of Latin transliteration.
+        cyr = sum("А" <= ch <= "я" or ch in "Ёё" for ch in text)
+        score += cyr * 8
+        return score
+
+    def recognize(self, image):
+        """Recognize the chat using enlarged variants; preserve all symbols."""
+        best_text = ""
+        best_score = -100000
+
+        variants = self._ocr_variants(image)
+
+        if self.ocr:
+            for variant in variants:
+                try:
+                    result, _ = self.ocr(variant)
+                    text = "\n".join(item[1] for item in result) if result else ""
+                    score = self._score_ocr(text)
+                    if score > best_score:
+                        best_text, best_score = text, score
+                    if "Лично" in text:
+                        return text, "RapidOCR"
+                except Exception:
+                    continue
+
+        # OCR.Space gets the same enlarged image. It is useful when local OCR
+        # confuses Cyrillic letters. The API is not given a character whitelist,
+        # so usernames and message symbols are not intentionally restricted.
+        for variant in variants[1:]:
+            fallback = self._ocr_space(variant)
+            score = self._score_ocr(fallback)
+            if score > best_score:
+                best_text, best_score = fallback, score
+            if "Лично" in fallback:
+                return fallback, "OCR.Space"
+
+        return best_text, "RapidOCR" if best_text else "OCR не распознал текст"
 
     def check_new_message(self, text):
         messages = self.extract_personal_all(text)
