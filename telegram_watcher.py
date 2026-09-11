@@ -1,5 +1,5 @@
-import re
-import threading
+import io
+import os
 import time
 import requests
 
@@ -10,14 +10,14 @@ except Exception:
 
 
 class TelegramWatcher:
-    """Independent OCR watcher for personal game-chat messages."""
+    """OCR watcher for a selected game-chat region."""
 
     def __init__(self, token="", chat_id="", region=None, ocrspace_key=""):
         self.token = token.strip()
         self.chat_id = chat_id.strip()
         self.region = region
-        self.ocrspace_key = ocrspace_key.strip()
-        self.stop_event = threading.Event()
+        self.ocrspace_key = (ocrspace_key or os.getenv("OCRSPACE_API_KEY", "helloworld")).strip()
+        self.stop_event = __import__("threading").Event()
         self.seen = set()
         self.ocr = RapidOCR() if RapidOCR else None
 
@@ -36,9 +36,7 @@ class TelegramWatcher:
         for attempt in range(retries):
             try:
                 response = requests.post(
-                    url,
-                    json={"chat_id": self.chat_id, "text": text},
-                    timeout=10,
+                    url, json={"chat_id": self.chat_id, "text": text}, timeout=10
                 )
                 if response.ok and response.json().get("ok"):
                     return True, "ОТПРАВЛЕНО"
@@ -49,55 +47,120 @@ class TelegramWatcher:
         return False, f"НЕ ОТПРАВЛЕНО после {retries} попыток"
 
     @staticmethod
-    def extract_personal(text):
-        """Return player/message without filtering nickname characters."""
+    def _personal_messages(text):
         lines = [line.strip() for line in text.splitlines() if line.strip()]
-        for i, line in enumerate(lines):
+        messages = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
             if not line.startswith("Лично"):
+                i += 1
                 continue
 
             payload = line[len("Лично"):].strip()
-            if not payload and i + 1 < len(lines):
-                payload = lines[i + 1].strip()
+            if not payload:
                 i += 1
+                continue
 
             if " шепчет:" in payload:
                 player, message = payload.split(" шепчет:", 1)
             elif ":" in payload:
                 player, message = payload.split(":", 1)
             else:
-                if i + 1 >= len(lines):
-                    continue
-                player, message = payload, lines[i + 1].strip()
+                player, message = payload, ""
+                if i + 1 < len(lines):
+                    message = lines[i + 1].strip()
+                    i += 1
 
             player = player.strip()
             message = message.strip()
+
             if player and message:
-                return player, message
-        return None
+                messages.append((player, message))
+            i += 1
+        return messages
+
+    @classmethod
+    def extract_personal(cls, text):
+        messages = cls._personal_messages(text)
+        return messages[0] if messages else None
+
+    @classmethod
+    def extract_personal_all(cls, text):
+        return cls._personal_messages(text)
+
+    def recognize(self, image):
+        """RapidOCR first; OCR.Space Russian fallback when local OCR is unusable."""
+        local_text = ""
+        if self.ocr:
+            try:
+                result, _ = self.ocr(image)
+                local_text = "\n".join(item[1] for item in result) if result else ""
+            except Exception:
+                local_text = ""
+
+        # If the local model loses Cyrillic markers such as «Лично», use OCR.Space.
+        if local_text and "Лично" in local_text:
+            return local_text, "RapidOCR"
+
+        fallback = self._ocr_space(image)
+        if fallback:
+            return fallback, "OCR.Space"
+        return local_text, "RapidOCR" if local_text else "OCR не распознал текст"
+
+    def _ocr_space(self, image):
+        try:
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            response = requests.post(
+                "https://api.ocr.space/parse/image",
+                files={"file": ("chat.png", buf.getvalue(), "image/png")},
+                data={
+                    "apikey": self.ocrspace_key,
+                    "language": "rus",
+                    "OCREngine": "2",
+                    "isOverlayRequired": "false",
+                    "scale": "true",
+                    "detectOrientation": "true",
+                },
+                timeout=20,
+            )
+            if not response.ok:
+                return ""
+            data = response.json()
+            parsed = data.get("ParsedResults") or []
+            return "\n".join(p.get("ParsedText", "") for p in parsed).strip()
+        except (requests.RequestException, ValueError, OSError):
+            return ""
 
     def check_new_message(self, text):
-        result = self.extract_personal(text)
-        if not result:
+        messages = self.extract_personal_all(text)
+        if not messages:
             return False, "НЕТ — сообщений «Лично» не найдено"
-        player, message = result
-        key = f"{player}\n{message}"
-        if key in self.seen:
-            return False, "НЕТ — сообщение уже обработано"
-        return True, "ДА — найдено новое сообщение"
+        fresh = []
+        for player, message in messages:
+            if f"{player}\n{message}" not in self.seen:
+                fresh.append((player, message))
+        if fresh:
+            return True, f"ДА — новых сообщений: {len(fresh)}"
+        return False, "НЕТ — сообщения уже обработаны"
 
     def process_ocr_text(self, text):
-        result = self.extract_personal(text)
-        if not result:
+        statuses = []
+        sent_any = False
+        for player, message in self.extract_personal_all(text):
+            key = f"{player}\n{message}"
+            if key in self.seen:
+                statuses.append("ПОВТОР — не отправлено")
+                continue
+            ok, status = self._send(f"Игрок: {player}\nСообщение: {message}")
+            statuses.append(status)
+            if ok:
+                self.seen.add(key)
+                sent_any = True
+        if not statuses:
             return False, None
-
-        player, message = result
-        key = f"{player}\n{message}"
-        if key in self.seen:
-            return False, None
-
-        self.seen.add(key)
-        return self._send(f"Игрок: {player}\nСообщение: {message}")
+        return sent_any, statuses[-1]
 
     def stop(self):
         self.stop_event.set()
