@@ -154,10 +154,8 @@ class App:
             x, y, w, h = self.telegram.region
             try:
                 image = pyautogui.screenshot(region=(x, y, w, h))
-                if self.telegram.ocr:
-                    result, _ = self.telegram.ocr(image)
-                    text = "\n".join(item[1] for item in result) if result else ""
-                    ok, status = self.telegram.process_ocr_text(text)
+                text, ocr_engine = self.telegram.recognize(image)
+                ok, status = self.telegram.process_ocr_text(text)
                     if status:
                         self.root.after(0, self.status_var.set, f"Telegram: {status}")
             except Exception:
@@ -180,7 +178,8 @@ class App:
             viewer.title("Проверить область чата")
             viewer.geometry("760x620")
             ttk.Label(viewer, text=f"Координаты: X={x}, Y={y}, W={w}, H={h}").pack(pady=8)
-            ttk.Label(viewer, text=f"Новое сообщение: {'ДА' if is_new else 'НЕТ'}", font=("Segoe UI", 11, "bold")).pack(pady=(0, 8))
+            ttk.Label(viewer, text=f"Новое сообщение: {'ДА' if is_new else 'НЕТ'}", font=("Segoe UI", 11, "bold")).pack(pady=(0, 4))
+            ttk.Label(viewer, text=f"OCR: {ocr_engine}").pack(pady=(0, 8))
             box = tk.Text(viewer, wrap="word")
             box.pack(fill="both", expand=True, padx=10, pady=10)
             box.insert("1.0", text or "Текст не распознан.")
