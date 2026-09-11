@@ -48,19 +48,20 @@ class App:
         ttk.Button(frame, text="Настроить Telegram", command=self.configure_telegram).grid(row=4, column=0, columnspan=2, pady=6, sticky="ew")
         ttk.Button(frame, text="Проверить Telegram", command=self.test_telegram).grid(row=5, column=0, columnspan=2, pady=6, sticky="ew")
         ttk.Button(frame, text="Выбрать область чата", command=self.select_chat_region).grid(row=6, column=0, columnspan=2, pady=6, sticky="ew")
+        ttk.Button(frame, text="Проверить область чата", command=self.check_chat_region).grid(row=7, column=0, columnspan=2, pady=6, sticky="ew")
         buttons = ttk.Frame(frame)
-        buttons.grid(row=7, column=0, columnspan=2, pady=12)
+        buttons.grid(row=8, column=0, columnspan=2, pady=12)
         self.start_btn = ttk.Button(buttons, text="Старт", command=self.start)
         self.start_btn.grid(row=0, column=0, padx=5)
         self.stop_btn = ttk.Button(buttons, text="Стоп", command=self.stop, state="disabled")
         self.stop_btn.grid(row=0, column=1, padx=5)
 
-        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=8, column=0, columnspan=2, pady=(4, 2))
+        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=9, column=0, columnspan=2, pady=(4, 2))
         ttk.Label(frame, textvariable=self.status_var).grid(
-            row=9, column=0, columnspan=2, pady=4
+            row=10, column=0, columnspan=2, pady=4
         )
         ttk.Label(frame, text="F8 — запуск / остановка").grid(
-            row=10, column=0, columnspan=2, pady=(10, 0)
+            row=11, column=0, columnspan=2, pady=(10, 0)
         )
 
         self.root.bind("<F8>", lambda _event: self.toggle())
@@ -134,6 +135,29 @@ class App:
                     self.telegram.process_ocr_text(text)
             except Exception:
                 continue
+
+    def check_chat_region(self):
+        if not self.telegram.region:
+            messagebox.showwarning("Область чата", "Сначала выберите область чата.")
+            return
+        x, y, w, h = self.telegram.region
+        try:
+            image = pyautogui.screenshot(region=(x, y, w, h))
+            text = ""
+            if self.telegram.ocr:
+                result, _ = self.telegram.ocr(image)
+                text = "\n".join(item[1] for item in result) if result else ""
+            viewer = tk.Toplevel(self.root)
+            viewer.title("Проверить область чата")
+            viewer.geometry("760x620")
+            ttk.Label(viewer, text=f"Координаты: X={x}, Y={y}, W={w}, H={h}").pack(pady=8)
+            box = tk.Text(viewer, wrap="word")
+            box.pack(fill="both", expand=True, padx=10, pady=10)
+            box.insert("1.0", text or "Текст не распознан.")
+            box.configure(state="disabled")
+        except Exception as exc:
+            messagebox.showerror("OCR", str(exc))
+
     def select_point(self):
         if self.worker and self.worker.is_alive():
             return
