@@ -1,6 +1,7 @@
 import threading
 import time
 import sys
+import random
 
 # Make Tkinter mouse coordinates use the same physical pixels as PyAutoGUI.
 # Without DPI awareness, Windows scaling (125%/150%/175%) can make a
@@ -53,8 +54,8 @@ class App:
         self.point_label = ttk.Label(frame, text="Точка: не выбрана")
         self.point_label.grid(row=2, column=0, columnspan=2, pady=6)
 
-        ttk.Label(frame, text="Интервал, мин:").grid(row=3, column=0, sticky="w", pady=6)
-        ttk.Entry(frame, textvariable=self.interval_var, width=14).grid(row=3, column=1, sticky="w")
+        ttk.Label(frame, text="Интервал:").grid(row=3, column=0, sticky="w", pady=6)
+        ttk.Label(frame, text="Случайно: 4, 5, 6 или 7 минут").grid(row=3, column=1, sticky="w", pady=6)
 
         ttk.Label(
             frame,
@@ -306,26 +307,23 @@ class App:
     def validate(self):
         if self.x is None or self.y is None:
             raise ValueError("Сначала нажмите «Указать точку на экране».")
-        try:
-            interval_minutes = float(self.interval_var.get())
-        except ValueError:
-            raise ValueError("Интервал должен быть числом.")
-        if interval_minutes < 0:
-            raise ValueError("Интервал не может быть отрицательным.")
-        return interval_minutes * 60
+        # Интервал теперь выбирается случайно перед каждым выполнением.
+        # Значения 4, 5, 6 и 7 минут, без повторения одного и того же
+        # значения два раза подряд.
+        return True
 
     def start(self):
         if self.worker and self.worker.is_alive():
             return
         try:
-            interval = self.validate()
+            self.validate()
         except ValueError as exc:
             messagebox.showerror("Ошибка", str(exc))
             return
 
         self.stop_event.clear()
         self.worker = threading.Thread(
-            target=self.run_loop, args=(self.x, self.y, interval), daemon=True
+            target=self.run_loop, args=(self.x, self.y), daemon=True
         )
         self.worker.start()
         self.start_btn.config(state="disabled")
@@ -346,9 +344,22 @@ class App:
         else:
             self.start()
 
-    def run_loop(self, x, y, interval):
+    def run_loop(self, x, y):
+        # Разрешённые интервалы. Каждый новый цикл выбирается случайно.
+        intervals = [4, 5, 6, 7]
+        previous_interval = None
+
         while not self.stop_event.is_set():
             try:
+                # Каждый запуск выбирает новое время. Одинаковое значение
+                # два раза подряд не допускается.
+                choices = [m for m in intervals if m != previous_interval]
+                interval_minutes = random.choice(choices)
+                previous_interval = interval_minutes
+                interval = interval_minutes * 60
+
+                # Последовательность команды НЕ меняется:
+                # точка -> клик -> ↑ -> Enter -> 3 сек -> Enter.
                 pyautogui.moveTo(x, y, duration=0.15)
                 pyautogui.click(x, y)
                 pyautogui.press("up")
@@ -358,7 +369,11 @@ class App:
                     break
 
                 pyautogui.press("enter")
-                self.root.after(0, self.status_var.set, f"Выполнено в ({x}, {y})")
+                self.root.after(
+                    0,
+                    self.status_var.set,
+                    f"Выполнено в ({x}, {y}) | следующий запуск через {interval_minutes} мин."
+                )
 
                 end_time = time.monotonic() + interval
                 while not self.stop_event.is_set():
@@ -372,13 +387,13 @@ class App:
                         break
                     if self.stop_event.wait(min(0.1, remaining)):
                         break
+
                 if self.stop_event.is_set():
                     break
+
             except Exception as exc:
                 self.root.after(0, self.status_var.set, f"Ошибка: {exc}")
                 break
-
-        self.root.after(0, self._worker_finished)
 
     def _worker_finished(self):
         self.start_btn.config(state="normal")
