@@ -16,9 +16,10 @@ except Exception as exc:
 class TelegramWatcher:
     """OCR watcher for a selected game-chat region."""
 
-    def __init__(self, token="", chat_id="", region=None, ocrspace_key=""):
+    def __init__(self, token="", chat_id="", region=None, ocrspace_key="", owner_name=""):
         self.token = token.strip()
         self.chat_id = chat_id.strip()
+        self.owner_name = owner_name.strip()
         self.region = region
         self.ocrspace_key = (ocrspace_key or os.getenv("OCRSPACE_API_KEY", "helloworld")).strip()
         self.stop_event = __import__("threading").Event()
@@ -70,6 +71,9 @@ class TelegramWatcher:
     def set_credentials(self, token, chat_id):
         self.token = token.strip()
         self.chat_id = chat_id.strip()
+
+    def set_owner_name(self, name):
+        self.owner_name = name.strip()
 
     def set_region(self, region):
         self.region = region
@@ -422,7 +426,7 @@ class TelegramWatcher:
             self.last_results.append(("", "", False, status))
             return False, status
 
-        ok, status = self._send("Вам написали в ЛС")
+        ok, status = self._send(f"{self.owner_name + ", " if self.owner_name else ""}вам написали в ЛС")
         self.last_results.append(("", "", ok, status))
         if ok:
             self.seen.add(key)
