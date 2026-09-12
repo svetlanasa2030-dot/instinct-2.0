@@ -2,6 +2,7 @@ import io
 import os
 import time
 import requests
+from PIL import Image
 
 RAPIDOCR_IMPORT_ERROR = ""
 try:
@@ -181,6 +182,59 @@ class TelegramWatcher:
             self.ocrspace_error = f"{type(exc).__name__}: {exc}"
             return ""
 
+    def _blue_row_crops(self, image):
+        """Find chat rows containing the blue personal-message marker.
+        The original row (not only the blue pixels) is sent to OCR so the
+        nickname/message can contain arbitrary colors and characters.
+        """
+        try:
+            import cv2
+            import numpy as np
+
+            arr = np.asarray(image.convert("RGB"))
+            hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
+
+            # Broad HSV range for the blue used by the game's "Лично" marker
+            # and blue "шепчет:" text. Saturation/value thresholds tolerate
+            # anti-aliasing and small rendering differences.
+            lower = np.array([90, 55, 45], dtype=np.uint8)
+            upper = np.array([145, 255, 255], dtype=np.uint8)
+            mask = cv2.inRange(hsv, lower, upper)
+
+            # Horizontal projection: blue pixels identify the text row.
+            projection = (mask > 0).sum(axis=1)
+            bands = []
+            start = None
+            for y, count in enumerate(projection):
+                if count >= 2 and start is None:
+                    start = y
+                elif count < 2 and start is not None:
+                    if y - start >= 1:
+                        bands.append((max(0, start - 7), min(arr.shape[0], y + 7)))
+                    start = None
+            if start is not None:
+                bands.append((max(0, start - 7), arr.shape[0]))
+
+            # Merge close bands so one wrapped message remains one crop.
+            merged = []
+            for y1, y2 in bands:
+                if merged and y1 <= merged[-1][1] + 5:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], y2))
+                else:
+                    merged.append((y1, y2))
+
+            crops = []
+            for y1, y2 in merged:
+                crop = Image.fromarray(arr[y1:y2, :, :])
+                crop = crop.resize(
+                    (crop.width * 5, crop.height * 5),
+                    Image.Resampling.LANCZOS
+                )
+                crops.append(crop)
+            return crops
+        except Exception:
+            return []
+
     def _ocr_variants(self, image):
         """Prepare several chat-specific images for OCR.
         The game uses small orange/white text on a dark background, so keeping
@@ -346,7 +400,13 @@ class TelegramWatcher:
         best_text = ""
         best_score = -100000.0
         best_engine = "OCR не распознал текст"
-        variants = self._ocr_variants(image)
+
+        # First prioritize rows identified by the blue "Лично" marker.
+        # OCR receives the complete original row, preserving arbitrary
+        # nickname/message colors and symbols.
+        blue_rows = self._blue_row_crops(image)
+        variants = [(f"blue_row_{i + 1}", row) for i, row in enumerate(blue_rows)]
+        variants.extend(self._ocr_variants(image))
 
         # Local OCR: test every image variant with both recognition dictionaries.
         for variant_name, variant in variants:
