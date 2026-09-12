@@ -262,12 +262,20 @@ class App:
             ttk.Label(viewer, text=new_status).pack(pady=(0, 4))
             ttk.Label(viewer, text=f"OCR: {ocr_engine}").pack(pady=(0, 8))
 
-            # Show exactly the pixels sent to OCR.
+            # Show the exact chat screenshot and, below it, the row
+            # that the OCR actually receives.
             from PIL import ImageTk
             preview = ImageTk.PhotoImage(image)
             preview_label = ttk.Label(viewer, image=preview)
             preview_label.pack(fill="x", padx=10, pady=(0, 8))
             preview_label.image = preview
+
+            row_preview = self.telegram.get_chat_row_preview(image)
+            ttk.Label(viewer, text="Строка, переданная в OCR:").pack(pady=(2, 4))
+            row_photo = ImageTk.PhotoImage(row_preview)
+            row_label = ttk.Label(viewer, image=row_photo)
+            row_label.pack(fill="x", padx=10, pady=(0, 8))
+            row_label.image = row_photo
 
             box = tk.Text(viewer, wrap="word", height=12)
             box.pack(fill="both", expand=True, padx=10, pady=10)
