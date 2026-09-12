@@ -116,14 +116,29 @@ class TelegramWatcher:
                 i += 1
                 continue
 
-            # Normal game format: "Игрок шепчет: сообщение"
+            # The game always uses the fixed separator "шепчет:".
+            # OCR can distort this fixed word (for example "uenHeT:"),
+            # especially with Chinese/mixed-language names. Therefore do NOT
+            # trust OCR spelling of "шепчет". If a colon is present, the token
+            # immediately before it is the fixed whisper marker; everything
+            # before that token is the nickname and everything after it is the
+            # message. This also preserves arbitrary nickname characters.
             whisper = " шепчет:"
             if whisper in payload:
                 player, message = payload.split(whisper, 1)
             elif "шепчет:" in payload:
                 player, message = payload.split("шепчет:", 1)
             elif ":" in payload:
-                player, message = payload.split(":", 1)
+                before, message = payload.split(":", 1)
+                before = before.rstrip()
+                # Remove the OCR representation of the fixed "шепчет" token.
+                # Only the final whitespace-delimited token is removed, so a
+                # nickname may contain spaces and arbitrary symbols.
+                parts = before.rsplit(None, 1)
+                if len(parts) == 2:
+                    player = parts[0]
+                else:
+                    player = ""
             else:
                 # If OCR split the message over two lines, join the next line.
                 player = payload
