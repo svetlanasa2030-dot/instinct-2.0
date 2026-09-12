@@ -94,62 +94,93 @@ class TelegramWatcher:
 
     @staticmethod
     def _personal_messages(text):
-        # OCR.Space can wrap the marker in brackets, e.g. "(Лично )".
-        # Search for the marker anywhere in the line and remove OCR-only
-        # punctuation before parsing the player and message.
+        """Extract only personal-message rows.
+
+        The game format is fixed:
+            Лично [НИК] шепчет: [СООБЩЕНИЕ]
+
+        "Лично" and "шепчет:" are fixed UI words. OCR may distort the
+        spelling of "шепчет", especially for mixed/CJK rows, so the parser
+        uses the colon as the boundary and removes the final OCR token before
+        it. The nickname itself has no character whitelist.
+        """
+        import re
+
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         messages = []
         i = 0
+
+        # Common OCR variants of the fixed word "шепчет".
+        whisper_re = re.compile(
+            r"(?:шепчет|uenhe?t|uenve?t|uenet|шеп[чч]ет|"
+            r"whisper|whe?sp[e3]r)\\s*:",
+            re.IGNORECASE
+        )
 
         while i < len(lines):
             line = lines[i]
             marker = line.find("Лично")
             if marker < 0:
+                # OCR may split "Лично" slightly; do not accept arbitrary
+                # lines because only blue-row crops are allowed upstream.
                 i += 1
                 continue
 
             payload = line[marker + len("Лично"):].strip()
             payload = payload.lstrip(" )]}:;-—–")
 
-            # OCR sometimes puts the personal marker on a separate line.
+            # Marker can be on its own line; combine with the following row.
+            if not payload and i + 1 < len(lines):
+                payload = lines[i + 1].strip()
+                i += 1
+
             if not payload:
                 i += 1
                 continue
 
-            # The game always uses the fixed separator "шепчет:".
-            # OCR can distort this fixed word (for example "uenHeT:"),
-            # especially with Chinese/mixed-language names. Therefore do NOT
-            # trust OCR spelling of "шепчет". If a colon is present, the token
-            # immediately before it is the fixed whisper marker; everything
-            # before that token is the nickname and everything after it is the
-            # message. This also preserves arbitrary nickname characters.
-            whisper = " шепчет:"
-            if whisper in payload:
-                player, message = payload.split(whisper, 1)
-            elif "шепчет:" in payload:
-                player, message = payload.split("шепчет:", 1)
+            player = ""
+            message = ""
+
+            # Preferred path: fixed whisper marker was recognized.
+            m = whisper_re.search(payload)
+            if m:
+                player = payload[:m.start()].strip()
+                message = payload[m.end():].strip()
             elif ":" in payload:
-                before, message = payload.split(":", 1)
+                # OCR distorted "шепчет", but the colon survived.
+                # Everything before the final colon consists of:
+                #     nickname + distorted fixed marker
+                before, message = payload.rsplit(":", 1)
                 before = before.rstrip()
-                # Remove the OCR representation of the fixed "шепчет" token.
-                # Only the final whitespace-delimited token is removed, so a
-                # nickname may contain spaces and arbitrary symbols.
-                parts = before.rsplit(None, 1)
-                if len(parts) == 2:
-                    player = parts[0]
-                else:
-                    player = ""
+
+                # Remove the OCR representation of the fixed marker.
+                # Keep the nickname untouched, including CJK/symbols/spaces.
+                marker_removed = re.sub(
+                    r"\\s+(?:[^\\s:]{2,12})$",
+                    "",
+                    before
+                )
+                player = marker_removed.strip()
             else:
-                # If OCR split the message over two lines, join the next line.
-                player = payload
-                message = lines[i + 1].strip() if i + 1 < len(lines) else ""
-                if message:
-                    i += 1
+                # No separator yet: try the next line as continuation.
+                if i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    if ":" in next_line:
+                        payload = payload + " " + next_line
+                        i += 1
+                        before, message = payload.rsplit(":", 1)
+                        marker_removed = re.sub(
+                            r"\\s+(?:[^\\s:]{2,12})$",
+                            "",
+                            before.rstrip()
+                        )
+                        player = marker_removed.strip()
 
             player = player.strip(" ()[]{}:;-—–")
             message = message.strip()
 
-            if player and message:
+            # Never send a malformed result.
+            if player and message and player != message:
                 messages.append((player, message))
 
             i += 1
@@ -503,8 +534,12 @@ class TelegramWatcher:
         # OCR.Space fallback: try all variants and accept any personal message.
         # Engine 2 + language=auto can detect multiple languages in one image.
         fallback_best = ""
+        # OCR.Space is a rate-limited fallback only. If it returns HTTP 429,
+        # stop immediately and keep the local RapidOCR result/status.
         for variant_name, variant in variants:
             fallback = self._ocr_space(variant)
+            if not fallback and self.ocrspace_error.startswith("HTTP 429"):
+                break
             if fallback:
                 if not fallback_best:
                     fallback_best = fallback
