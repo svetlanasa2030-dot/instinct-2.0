@@ -51,7 +51,7 @@ class TelegramWatcher:
             return RapidOCR(params={
                 "Det.engine_type": EngineType.ONNXRUNTIME,
                 # MULTI detection is more tolerant of mixed-language player names.
-                "Det.lang_type": LangDet.MULTI,
+                "Det.lang_type": LangDet.CH,
                 "Det.model_type": ModelType.MOBILE,
                 "Det.ocr_version": OCRVersion.PPOCRV5,
                 "Det.thresh": 0.20,
