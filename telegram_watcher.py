@@ -50,9 +50,13 @@ class TelegramWatcher:
         try:
             return RapidOCR(params={
                 "Det.engine_type": EngineType.ONNXRUNTIME,
-                "Det.lang_type": LangDet.CH,
+                # MULTI detection is more tolerant of mixed-language player names.
+                "Det.lang_type": LangDet.MULTI,
                 "Det.model_type": ModelType.MOBILE,
                 "Det.ocr_version": OCRVersion.PPOCRV5,
+                "Det.thresh": 0.20,
+                "Det.box_thresh": 0.30,
+                "Det.unclip_ratio": 1.8,
                 "Rec.engine_type": EngineType.ONNXRUNTIME,
                 "Rec.lang_type": language,
                 "Rec.model_type": ModelType.MOBILE,
@@ -198,10 +202,23 @@ class TelegramWatcher:
             variants.append(("enlarged", Image.fromarray(cv2.cvtColor(up, cv2.COLOR_BGR2RGB))))
 
             # High-contrast grayscale while retaining glyph shapes.
-            gray_up = cv2.resize(gray, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+            gray_up = cv2.resize(gray, None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC)
             clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
             gray_up = clahe.apply(gray_up)
             variants.append(("gray", Image.fromarray(gray_up)))
+
+            # Game text is bright on a very dark background. Adaptive and
+            # Otsu thresholding help the detector find small glyphs.
+            adaptive = cv2.adaptiveThreshold(
+                gray_up, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY, 31, 7
+            )
+            variants.append(("adaptive", Image.fromarray(adaptive)))
+
+            _, otsu = cv2.threshold(
+                gray_up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+            )
+            variants.append(("otsu", Image.fromarray(otsu)))
 
             # Keep saturated colored chat text (orange/red/blue labels).
             sat_mask = cv2.inRange(hsv, np.array([0, 45, 60]), np.array([179, 255, 255]))
