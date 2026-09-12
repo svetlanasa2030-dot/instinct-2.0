@@ -40,6 +40,14 @@ class App:
         self.status_var = tk.StringVar(value="Готово")
         self.timer_var = tk.StringVar(value="Осталось: 00:00:00")
 
+        # Separate night schedule: active only inside the user-defined time window.
+        self.night_from_var = tk.StringVar(value="00:00")
+        self.night_to_var = tk.StringVar(value="09:00")
+        self.night_status_var = tk.StringVar(value="Ночной режим: выключен")
+        self.night_stop = threading.Event()
+        self.night_worker = None
+
+
         frame = ttk.Frame(root, padding=18)
         frame.grid()
 
@@ -68,19 +76,21 @@ class App:
         ttk.Button(frame, text="Выбрать область чата", command=self.select_chat_region).grid(row=6, column=0, columnspan=2, pady=6, sticky="ew")
         ttk.Button(frame, text="Проверить область чата", command=self.check_chat_region).grid(row=8, column=0, columnspan=2, pady=6, sticky="ew")
         ttk.Button(frame, text="Журнал Telegram", command=self.show_telegram_log).grid(row=9, column=0, columnspan=2, pady=6, sticky="ew")
+        ttk.Button(frame, text="Ночной режим", command=self.configure_night_mode).grid(row=10, column=0, columnspan=2, pady=6, sticky="ew")
+        ttk.Label(frame, textvariable=self.night_status_var).grid(row=11, column=0, columnspan=2, pady=4)
         buttons = ttk.Frame(frame)
-        buttons.grid(row=10, column=0, columnspan=2, pady=12)
+        buttons.grid(row=12, column=0, columnspan=2, pady=12)
         self.start_btn = ttk.Button(buttons, text="Старт", command=self.start)
         self.start_btn.grid(row=0, column=0, padx=5)
         self.stop_btn = ttk.Button(buttons, text="Стоп", command=self.stop, state="disabled")
         self.stop_btn.grid(row=0, column=1, padx=5)
 
-        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=11, column=0, columnspan=2, pady=(4, 2))
+        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=13, column=0, columnspan=2, pady=(4, 2))
         ttk.Label(frame, textvariable=self.status_var).grid(
-            row=12, column=0, columnspan=2, pady=4
+            row=14, column=0, columnspan=2, pady=4
         )
         ttk.Label(frame, text="F8 — запуск / остановка").grid(
-            row=14, column=0, columnspan=2, pady=(10, 0)
+            row=15, column=0, columnspan=2, pady=(10, 0)
         )
 
         self.root.bind("<F8>", lambda _event: self.toggle())
@@ -244,6 +254,93 @@ class App:
         # Keep the in-memory journal bounded.
         if len(self.telegram_log) > 300:
             del self.telegram_log[:-300]
+
+    def configure_night_mode(self):
+        win = tk.Toplevel(self.root)
+        win.title("Ночной режим")
+        frame = ttk.Frame(win, padding=14)
+        frame.grid()
+        ttk.Label(frame, text="С:").grid(row=0, column=0, padx=5, pady=5)
+        ttk.Entry(frame, textvariable=self.night_from_var, width=10).grid(row=0, column=1, pady=5)
+        ttk.Label(frame, text="До:").grid(row=1, column=0, padx=5, pady=5)
+        ttk.Entry(frame, textvariable=self.night_to_var, width=10).grid(row=1, column=1, pady=5)
+        ttk.Label(frame, text="Интервалы: 9, 24, 35, 40 минут").grid(
+            row=2, column=0, columnspan=2, pady=6
+        )
+
+        def save_start():
+            try:
+                from datetime import datetime
+                for value in (self.night_from_var.get(), self.night_to_var.get()):
+                    datetime.strptime(value.strip(), "%H:%M")
+                if self.x is None or self.y is None:
+                    raise ValueError("Сначала выберите точку на экране.")
+            except ValueError as exc:
+                messagebox.showerror("Ночной режим", str(exc))
+                return
+            self.night_stop.clear()
+            self.night_worker = threading.Thread(target=self.night_loop, daemon=True)
+            self.night_worker.start()
+            self.night_status_var.set(
+                f"Ночной режим: {self.night_from_var.get()}–{self.night_to_var.get()} | 9/24/35/40 мин"
+            )
+            win.destroy()
+
+        ttk.Button(frame, text="Запустить", command=save_start).grid(
+            row=3, column=0, columnspan=2, pady=8
+        )
+        ttk.Button(frame, text="Остановить", command=self.stop_night).grid(
+            row=4, column=0, columnspan=2, pady=4
+        )
+
+    def stop_night(self):
+        self.night_stop.set()
+        self.night_status_var.set("Ночной режим: выключен")
+
+    def _night_active(self):
+        from datetime import datetime
+        now = datetime.now().time()
+        start = datetime.strptime(self.night_from_var.get().strip(), "%H:%M").time()
+        end = datetime.strptime(self.night_to_var.get().strip(), "%H:%M").time()
+        if start <= end:
+            return start <= now <= end
+        return now >= start or now <= end
+
+    def _night_action(self):
+        pyautogui.moveTo(self.x, self.y, duration=0.15)
+        pyautogui.click(self.x, self.y)
+        pyautogui.press("up")
+        pyautogui.press("enter")
+        if self.night_stop.wait(3):
+            return
+        pyautogui.press("enter")
+
+    def night_loop(self):
+        intervals = [9, 24, 35, 40]
+        previous = None
+        while not self.night_stop.is_set():
+            if not self._night_active():
+                self.night_stop.wait(10)
+                continue
+            choices = [m for m in intervals if m != previous]
+            minutes = random.choice(choices)
+            previous = minutes
+            try:
+                self._night_action()
+                self.root.after(0, self.night_status_var.set,
+                                f"Ночной режим: выполнено | следующее через {minutes} мин")
+                deadline = time.monotonic() + minutes * 60
+                while not self.night_stop.is_set() and self._night_active():
+                    left = max(0, deadline - time.monotonic())
+                    self.root.after(0, self.night_status_var.set,
+                                    f"Ночной режим: осталось {int(left//3600):02d}:{int((left%3600)//60):02d}:{int(left%60):02d}")
+                    if left <= 0:
+                        break
+                    if self.night_stop.wait(min(1, left)):
+                        break
+            except Exception as exc:
+                self.root.after(0, self.night_status_var.set, f"Ночной режим: ошибка — {exc}")
+                break
 
     def show_telegram_log(self):
         win = tk.Toplevel(self.root)
