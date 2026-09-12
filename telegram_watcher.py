@@ -251,137 +251,26 @@ class TelegramWatcher:
             return ""
 
     def _blue_row_crops(self, image):
-        """Capture only chat rows containing the blue 'Лично' marker."""
-        try:
-            import cv2
-            import numpy as np
-
-            arr = np.asarray(image.convert("RGB"))
-            hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
-
-            # Blue text/label used by the game for "Лично".
-            mask = cv2.inRange(
-                hsv,
-                np.array([90, 55, 45], dtype=np.uint8),
-                np.array([140, 255, 255], dtype=np.uint8),
-            )
-            mask = cv2.morphologyEx(
-                mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)
-            )
-
-            # Horizontal projection: one chat line creates a compact band.
-            projection = (mask > 0).sum(axis=1)
-            bands = []
-            start = None
-            for y, count in enumerate(projection):
-                if count >= 2 and start is None:
-                    start = y
-                elif count < 2 and start is not None:
-                    if y - start >= 1:
-                        bands.append((max(0, start - 8), min(arr.shape[0], y + 8)))
-                    start = None
-            if start is not None:
-                bands.append((max(0, start - 8), arr.shape[0]))
-
-            # Merge overlapping bands.
-            merged = []
-            for y1, y2 in bands:
-                if merged and y1 <= merged[-1][1] + 4:
-                    merged[-1] = (merged[-1][0], max(merged[-1][1], y2))
-                else:
-                    merged.append((y1, y2))
-
-            result = []
-            for y1, y2 in merged:
-                row = arr[y1:y2, :, :]
-                if row.shape[0] < 8:
-                    continue
-
-                # Keep the entire row. Do not remove colored nickname/message.
-                up = cv2.resize(
-                    row, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC
-                )
-                result.append(Image.fromarray(up))
-
-                # Simple white/bright-text version.
-                gray = cv2.cvtColor(row, cv2.COLOR_RGB2GRAY)
-                bright = cv2.inRange(gray, 95, 255)
-                bright = cv2.resize(
-                    bright, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC
-                )
-                result.append(Image.fromarray(bright))
-
-            return result
-        except Exception as exc:
-            msg = f"blue-row capture: {type(exc).__name__}: {exc}"
-            if msg not in self.ocr_runtime_errors:
-                self.ocr_runtime_errors.append(msg)
-            return []
+        """Simple mode: return the selected chat image unchanged."""
+        return [image]
 
     def get_chat_row_preview(self, image):
-        """Return the first detected personal-chat row for the diagnostic window."""
-        rows = self._blue_row_crops(image)
-        return rows[0] if rows else image
+        return image
 
     def _ocr_variants(self, image):
-        """Prepare several chat-specific images for OCR.
-        The game uses small orange/white text on a dark background, so keeping
-        the original RGB image alone is not reliable.
-        """
-        variants = [("original", image)]
+        """Simple mode: one enlarged copy of the selected chat."""
         try:
             import cv2
             import numpy as np
-            from PIL import Image
-
-            rgb = np.array(image)
-            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-            gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
-
-            # Enlarge small game-chat glyphs.
-            up = cv2.resize(bgr, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-            variants.append(("enlarged", Image.fromarray(cv2.cvtColor(up, cv2.COLOR_BGR2RGB))))
-
-            # High-contrast grayscale while retaining glyph shapes.
-            gray_up = cv2.resize(gray, None, fx=5, fy=5, interpolation=cv2.INTER_CUBIC)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-            gray_up = clahe.apply(gray_up)
-            variants.append(("gray", Image.fromarray(gray_up)))
-
-            # Game text is bright on a very dark background. Adaptive and
-            # Otsu thresholding help the detector find small glyphs.
-            adaptive = cv2.adaptiveThreshold(
-                gray_up, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY, 31, 7
+            arr = np.asarray(image.convert("RGB"))
+            enlarged = cv2.resize(
+                arr, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC
             )
-            variants.append(("adaptive", Image.fromarray(adaptive)))
-
-            _, otsu = cv2.threshold(
-                gray_up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-            )
-            variants.append(("otsu", Image.fromarray(otsu)))
-
-            # Keep saturated colored chat text (orange/red/blue labels).
-            sat_mask = cv2.inRange(hsv, np.array([0, 45, 60]), np.array([179, 255, 255]))
-            sat_mask = cv2.resize(sat_mask, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST)
-            variants.append(("color_mask", Image.fromarray(sat_mask)))
-
-            # Bright text (white/yellow) on the dark game background.
-            bright = cv2.inRange(gray, 145, 255)
-            bright = cv2.resize(bright, None, fx=4, fy=4, interpolation=cv2.INTER_NEAREST)
-            variants.append(("bright_mask", Image.fromarray(bright)))
-
-            # Sharpened original for punctuation and unusual symbols.
-            up_rgb = cv2.cvtColor(up, cv2.COLOR_BGR2RGB)
-            blur = cv2.GaussianBlur(up_rgb, (0, 0), 1.2)
-            sharp = cv2.addWeighted(up_rgb, 1.7, blur, -0.7, 0)
-            variants.append(("sharp", Image.fromarray(sharp)))
+            return [("chat", Image.fromarray(enlarged))]
         except Exception:
-            pass
-        return variants
+            return [("chat", image)]
 
-    @staticmethod
+
     def _score_ocr(text, confidence=0.0):
         if not text:
             return -100000.0
@@ -483,90 +372,34 @@ class TelegramWatcher:
         return [(player, message)]
 
     def recognize(self, image):
-        """Robust multilingual OCR for the game chat.
-
-        Do not require a perfect OCR confidence score before parsing a
-        personal message. Small game-chat text can temporarily produce a low
-        confidence score even when the words are usable.
-        """
+        """Simple, non-blocking-friendly OCR: one image, local RapidOCR."""
+        variants = self._ocr_variants(image)
         best_text = ""
-        best_score = -100000.0
+        best_conf = -1.0
         best_engine = "OCR не распознал текст"
 
-        # First prioritize rows identified by the blue "Лично" marker.
-        # OCR receives the complete original row, preserving arbitrary
-        # nickname/message colors and symbols.
-        blue_rows = self._blue_row_crops(image)
-        blue_variants = [(f"blue_row_{i + 1}", row) for i, row in enumerate(blue_rows)]
-        variants = blue_variants + self._ocr_variants(image)
-
-        # Local OCR: test every image variant with both recognition dictionaries.
-        # IMPORTANT: only blue_row variants are allowed to produce a Telegram
-        # personal message. Full-chat OCR is diagnostic only, so purple/red/
-        # system messages can never be sent accidentally.
         for variant_name, variant in variants:
-            cyr_text, cyr_conf = self._run_rapidocr(variant, self.ocr_cyrillic)
-            ch_text, ch_conf = self._run_rapidocr(variant, self.ocr_chinese)
-
-            for txt, conf, label in (
-                (cyr_text, cyr_conf, "Cyrillic"),
-                (ch_text, ch_conf, "Chinese/Latin"),
+            for engine, label in (
+                (self.ocr_cyrillic, "Cyrillic"),
+                (self.ocr_chinese, "Chinese/Latin"),
             ):
-                score = self._score_ocr(txt, conf)
-                if score > best_score:
-                    best_text, best_score = txt, score
-                    best_engine = f"RapidOCR {label} ({variant_name})"
+                text, confidence = self._run_rapidocr(variant, engine)
+                if text and confidence > best_conf:
+                    best_text = text
+                    best_conf = confidence
+                    best_engine = f"RapidOCR {label}"
 
-            # Accept a usable personal-message marker even when confidence is
-            # below the previous 0.35 threshold.
-            # Personal-message extraction is enabled ONLY for rows selected by
-            # the blue "Лично" marker. OCR of the complete chat cannot trigger
-            # Telegram sending anymore.
-            if not variant_name.startswith("blue_row_"):
-                continue
-
-            if not variant_name.startswith("blue_row_"):
-                continue
-            for txt,label in ((cyr_text,"Cyrillic"),(ch_text,"Chinese/Latin")):
-                parsed=self._personal_payload(txt)
-                if parsed:
-                    player,message=parsed
-                    return (f"Лично {player} шепчет: {message}",f"RapidOCR multilingual ({variant_name}, {label})")
-
-        # OCR.Space fallback: try all variants and accept any personal message.
-        # Engine 2 + language=auto can detect multiple languages in one image.
-        fallback_best = ""
-        # OCR.Space is a rate-limited fallback only. If it returns HTTP 429,
-        # stop immediately and keep the local RapidOCR result/status.
-        for variant_name, variant in variants:
-            fallback = self._ocr_space(variant)
-            if not fallback and self.ocrspace_error.startswith("HTTP 429"):
-                break
-            if fallback:
-                if not fallback_best:
-                    fallback_best = fallback
-                personal = self._personal_messages(fallback) if variant_name.startswith("blue_row_") else []
-                if personal:
-                    player, message = personal[0]
-                    return (
-                        f"Лично {player} шепчет: {message}",
-                        f"OCR.Space Auto ({variant_name})"
-                    )
-
-        if fallback_best and len(fallback_best.strip()) > 1:
-            return fallback_best, "OCR.Space Auto"
+        if best_text.strip():
+            return best_text.strip(), best_engine
 
         diagnostics = []
         if self.ocr_errors:
-            diagnostics.append("RapidOCR init: " + " | ".join(self.ocr_errors))
+            diagnostics.append("RapidOCR: " + " | ".join(self.ocr_errors))
         if self.ocr_runtime_errors:
             diagnostics.append("RapidOCR runtime: " + " | ".join(self.ocr_runtime_errors[-3:]))
-        if self.ocrspace_error:
-            diagnostics.append("OCR.Space: " + self.ocrspace_error)
-        if diagnostics:
-            return "", "OCR не распознал текст — " + " || ".join(diagnostics)
-
-        return best_text, best_engine
+        return "", "OCR не распознал текст" + (
+            " — " + " || ".join(diagnostics) if diagnostics else ""
+        )
 
     def check_new_message(self, text):
         messages = self.extract_personal_all(text)
