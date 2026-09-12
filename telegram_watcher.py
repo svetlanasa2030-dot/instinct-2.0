@@ -188,6 +188,19 @@ class TelegramWatcher:
         return messages
 
     @classmethod
+    def _personal_payload(cls,text):
+        """Parse [nickname] [fixed whisper marker]: [message]."""
+        for line in [x.strip() for x in text.splitlines() if x.strip()]:
+            if ":" not in line: continue
+            before,message=line.rsplit(":",1)
+            parts=before.rstrip().rsplit(None,1)
+            if len(parts)!=2 or not message.strip(): continue
+            player=parts[0].strip(" ()[]{}:;-—–")
+            marker=parts[1].strip(" ()[]{}:;-—–").lower()
+            if player and (marker=="шепчет" or 2<=len(marker)<=12):
+                return player,message.strip()
+        return None
+    @classmethod
     def extract_personal(cls, text):
         messages = cls._personal_messages(text)
         return messages[0] if messages else None
@@ -229,85 +242,46 @@ class TelegramWatcher:
             return ""
 
     def _blue_row_crops(self, image):
-        """Find chat rows containing the blue personal-message marker.
-        The original row (not only the blue pixels) is sent to OCR so the
-        nickname/message can contain arbitrary colors and characters.
-        """
+        """Find blue personal rows and OCR only the payload to the right of the badge."""
         try:
-            import cv2
-            import numpy as np
-
-            arr = np.asarray(image.convert("RGB"))
-            hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
-
-            # Broad HSV range for the blue used by the game's "Лично" marker
-            # and blue "шепчет:" text. Saturation/value thresholds tolerate
-            # anti-aliasing and small rendering differences.
-            lower = np.array([98, 70, 80], dtype=np.uint8)
-            upper = np.array([125, 255, 255], dtype=np.uint8)
-            mask = cv2.inRange(hsv, lower, upper)
-
-            # The blue "Лично" marker is at the left edge of the chat row.
-            # Ignore blue UI/background elements elsewhere in the row.
-            marker_zone = mask.copy()
-            marker_x = max(1, int(marker_zone.shape[1] * 0.24))
-            marker_zone[:, marker_x:] = 0
-
-            # Horizontal projection: only the left-side blue marker identifies
-            # a personal-message row. Purple system text is excluded.
-            projection = (marker_zone > 0).sum(axis=1)
-            bands = []
-            start = None
-            for y, count in enumerate(projection):
-                if count >= 2 and start is None:
-                    start = y
-                elif count < 2 and start is not None:
-                    if y - start >= 1:
-                        bands.append((max(0, start - 7), min(arr.shape[0], y + 7)))
-                    start = None
-            if start is not None:
-                bands.append((max(0, start - 7), arr.shape[0]))
-
-            # Merge close bands so one wrapped message remains one crop.
-            merged = []
-            for y1, y2 in bands:
-                if merged and y1 <= merged[-1][1] + 5:
-                    merged[-1] = (merged[-1][0], max(merged[-1][1], y2))
-                else:
-                    merged.append((y1, y2))
-
-            crops = []
-            for y1, y2 in merged:
-                # Keep the complete row: nickname/message may use any color.
-                crop_arr = arr[y1:y2, :, :]
-                crop = Image.fromarray(crop_arr)
-                crop = crop.resize(
-                    (crop.width * 6, crop.height * 6),
-                    Image.Resampling.LANCZOS
-                )
-                crops.append(crop)
-
-                # Add a high-contrast text-only version. This is important
-                # when the game background is textured/transparent and OCR
-                # cannot detect glyphs on the original screenshot.
-                try:
-                    gray = cv2.cvtColor(crop_arr, cv2.COLOR_RGB2GRAY)
-                    hsv_row = cv2.cvtColor(crop_arr, cv2.COLOR_RGB2HSV)
-                    bright = cv2.inRange(gray, 105, 255)
-                    saturated = cv2.inRange(hsv_row, np.array([0, 45, 70]), np.array([179, 255, 255]))
-                    clean = cv2.bitwise_or(bright, saturated)
-                    # Remove isolated noise while preserving small glyphs.
-                    clean = cv2.morphologyEx(
-                        clean, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8)
-                    )
-                    clean = cv2.resize(
-                        clean, None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC
-                    )
-                    crops.append(Image.fromarray(clean))
-                except Exception:
-                    pass
+            import cv2, numpy as np
+            arr=np.asarray(image.convert("RGB"))
+            hsv=cv2.cvtColor(arr,cv2.COLOR_RGB2HSV)
+            lower=np.array([95,60,55],np.uint8); upper=np.array([135,255,255],np.uint8)
+            mask=cv2.inRange(hsv,lower,upper)
+            marker_x=max(1,int(arr.shape[1]*0.24))
+            zone=mask.copy(); zone[:,marker_x:]=0
+            projection=(zone>0).sum(axis=1)
+            bands=[]; start=None
+            for y,count in enumerate(projection):
+                if count>=2 and start is None: start=y
+                elif count<2 and start is not None:
+                    bands.append((max(0,start-6),min(arr.shape[0],y+6))); start=None
+            if start is not None: bands.append((max(0,start-6),arr.shape[0]))
+            merged=[]
+            for y1,y2 in bands:
+                if merged and y1<=merged[-1][1]+5: merged[-1]=(merged[-1][0],max(merged[-1][1],y2))
+                else: merged.append((y1,y2))
+            crops=[]
+            for y1,y2 in merged:
+                row=arr[y1:y2,:,:]
+                rm=cv2.inRange(cv2.cvtColor(row,cv2.COLOR_RGB2HSV),lower,upper)[:,:marker_x]
+                xs=np.where(rm>0)[1]
+                x0=min(row.shape[1]-1,int(xs.max())+5) if xs.size else 0
+                payload=row[:,x0:,:]
+                if payload.size==0: continue
+                crops.append(Image.fromarray(payload).resize((payload.shape[1]*7,payload.shape[0]*7),Image.Resampling.LANCZOS))
+                gray=cv2.cvtColor(payload,cv2.COLOR_RGB2GRAY)
+                bright=cv2.inRange(gray,90,255)
+                bright=cv2.resize(bright,None,fx=7,fy=7,interpolation=cv2.INTER_CUBIC)
+                crops.append(Image.fromarray(bright))
+                sat=cv2.inRange(cv2.cvtColor(payload,cv2.COLOR_RGB2HSV),np.array([0,45,55],np.uint8),np.array([179,255,255],np.uint8))
+                sat=cv2.resize(sat,None,fx=7,fy=7,interpolation=cv2.INTER_CUBIC)
+                crops.append(Image.fromarray(sat))
             return crops
-        except Exception:
+        except Exception as exc:
+            msg=f"blue-row OCR: {type(exc).__name__}: {exc}"
+            if msg not in self.ocr_runtime_errors: self.ocr_runtime_errors.append(msg)
             return []
 
     def _ocr_variants(self, image):
@@ -512,24 +486,13 @@ class TelegramWatcher:
             if not variant_name.startswith("blue_row_"):
                 continue
 
-            cyr_personal = self._personal_messages(cyr_text)
-            ch_personal = self._personal_messages(ch_text)
-
-            if cyr_personal:
-                player, message = self._merge_multilingual_nickname(
-                    cyr_text, ch_text
-                )[0] if self._merge_multilingual_nickname(cyr_text, ch_text) else cyr_personal[0]
-                return (
-                    f"Лично {player} шепчет: {message}",
-                    f"RapidOCR multilingual ({variant_name})"
-                )
-
-            if ch_personal:
-                player, message = ch_personal[0]
-                return (
-                    f"Лично {player} шепчет: {message}",
-                    f"RapidOCR multilingual ({variant_name})"
-                )
+            if not variant_name.startswith("blue_row_"):
+                continue
+            for txt,label in ((cyr_text,"Cyrillic"),(ch_text,"Chinese/Latin")):
+                parsed=self._personal_payload(txt)
+                if parsed:
+                    player,message=parsed
+                    return (f"Лично {player} шепчет: {message}",f"RapidOCR multilingual ({variant_name}, {label})")
 
         # OCR.Space fallback: try all variants and accept any personal message.
         # Engine 2 + language=auto can detect multiple languages in one image.
