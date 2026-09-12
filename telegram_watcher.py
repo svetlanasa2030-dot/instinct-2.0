@@ -30,6 +30,7 @@ class TelegramWatcher:
         self.ocr_cyrillic = None
         self.ocr_chinese = None
         self.ocr_errors = []
+        self.ocr_runtime_errors = []
         self.ocrspace_error = ""
         if RapidOCR:
             self.ocr_cyrillic = self._create_ocr(LangRec.CYRILLIC)
@@ -261,7 +262,10 @@ class TelegramWatcher:
                         except (TypeError, ValueError):
                             pass
                 return "\n".join(parts), (sum(scores) / len(scores) if scores else 0.0)
-        except Exception:
+        except Exception as exc:
+            msg = f"{type(exc).__name__}: {exc}"
+            if msg not in self.ocr_runtime_errors:
+                self.ocr_runtime_errors.append(msg)
             return "", 0.0
         return "", 0.0
 
@@ -383,7 +387,9 @@ class TelegramWatcher:
 
         diagnostics = []
         if self.ocr_errors:
-            diagnostics.append("RapidOCR: " + " | ".join(self.ocr_errors))
+            diagnostics.append("RapidOCR init: " + " | ".join(self.ocr_errors))
+        if self.ocr_runtime_errors:
+            diagnostics.append("RapidOCR runtime: " + " | ".join(self.ocr_runtime_errors[-3:]))
         if self.ocrspace_error:
             diagnostics.append("OCR.Space: " + self.ocrspace_error)
         if diagnostics:
