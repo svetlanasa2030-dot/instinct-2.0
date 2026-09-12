@@ -197,12 +197,19 @@ class TelegramWatcher:
             # Broad HSV range for the blue used by the game's "Лично" marker
             # and blue "шепчет:" text. Saturation/value thresholds tolerate
             # anti-aliasing and small rendering differences.
-            lower = np.array([90, 55, 45], dtype=np.uint8)
-            upper = np.array([145, 255, 255], dtype=np.uint8)
+            lower = np.array([98, 70, 80], dtype=np.uint8)
+            upper = np.array([125, 255, 255], dtype=np.uint8)
             mask = cv2.inRange(hsv, lower, upper)
 
-            # Horizontal projection: blue pixels identify the text row.
-            projection = (mask > 0).sum(axis=1)
+            # The blue "Лично" marker is at the left edge of the chat row.
+            # Ignore blue UI/background elements elsewhere in the row.
+            marker_zone = mask.copy()
+            marker_x = max(1, int(marker_zone.shape[1] * 0.24))
+            marker_zone[:, marker_x:] = 0
+
+            # Horizontal projection: only the left-side blue marker identifies
+            # a personal-message row. Purple system text is excluded.
+            projection = (marker_zone > 0).sum(axis=1)
             bands = []
             start = None
             for y, count in enumerate(projection):
@@ -405,10 +412,13 @@ class TelegramWatcher:
         # OCR receives the complete original row, preserving arbitrary
         # nickname/message colors and symbols.
         blue_rows = self._blue_row_crops(image)
-        variants = [(f"blue_row_{i + 1}", row) for i, row in enumerate(blue_rows)]
-        variants.extend(self._ocr_variants(image))
+        blue_variants = [(f"blue_row_{i + 1}", row) for i, row in enumerate(blue_rows)]
+        variants = blue_variants + self._ocr_variants(image)
 
         # Local OCR: test every image variant with both recognition dictionaries.
+        # IMPORTANT: only blue_row variants are allowed to produce a Telegram
+        # personal message. Full-chat OCR is diagnostic only, so purple/red/
+        # system messages can never be sent accidentally.
         for variant_name, variant in variants:
             cyr_text, cyr_conf = self._run_rapidocr(variant, self.ocr_cyrillic)
             ch_text, ch_conf = self._run_rapidocr(variant, self.ocr_chinese)
@@ -424,6 +434,12 @@ class TelegramWatcher:
 
             # Accept a usable personal-message marker even when confidence is
             # below the previous 0.35 threshold.
+            # Personal-message extraction is enabled ONLY for rows selected by
+            # the blue "Лично" marker. OCR of the complete chat cannot trigger
+            # Telegram sending anymore.
+            if not variant_name.startswith("blue_row_"):
+                continue
+
             cyr_personal = self._personal_messages(cyr_text)
             ch_personal = self._personal_messages(ch_text)
 
@@ -451,7 +467,7 @@ class TelegramWatcher:
             if fallback:
                 if not fallback_best:
                     fallback_best = fallback
-                personal = self._personal_messages(fallback)
+                personal = self._personal_messages(fallback) if variant_name.startswith("blue_row_") else []
                 if personal:
                     player, message = personal[0]
                     return (
