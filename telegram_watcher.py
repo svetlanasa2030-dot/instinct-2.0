@@ -251,11 +251,7 @@ class TelegramWatcher:
             return ""
 
     def _blue_row_crops(self, image):
-        """Find the actual blue 'Лично' badge and crop its complete row.
-
-        Do not use every blue pixel as a row marker: the game also renders
-        blue nickname/message text. Detect the rectangular badge by geometry.
-        """
+        """Capture only chat rows containing the blue 'Лично' marker."""
         try:
             import cv2
             import numpy as np
@@ -263,70 +259,69 @@ class TelegramWatcher:
             arr = np.asarray(image.convert("RGB"))
             hsv = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
 
-            lower = np.array([95, 80, 35], dtype=np.uint8)
-            upper = np.array([135, 255, 220], dtype=np.uint8)
-            mask = cv2.inRange(hsv, lower, upper)
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3,3), np.uint8))
+            # Blue text/label used by the game for "Лично".
+            mask = cv2.inRange(
+                hsv,
+                np.array([90, 55, 45], dtype=np.uint8),
+                np.array([140, 255, 255], dtype=np.uint8),
+            )
+            mask = cv2.morphologyEx(
+                mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8)
+            )
 
-            num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
-            candidates = []
-            h, w = arr.shape[:2]
+            # Horizontal projection: one chat line creates a compact band.
+            projection = (mask > 0).sum(axis=1)
+            bands = []
+            start = None
+            for y, count in enumerate(projection):
+                if count >= 2 and start is None:
+                    start = y
+                elif count < 2 and start is not None:
+                    if y - start >= 1:
+                        bands.append((max(0, start - 8), min(arr.shape[0], y + 8)))
+                    start = None
+            if start is not None:
+                bands.append((max(0, start - 8), arr.shape[0]))
 
-            for i in range(1, num):
-                x, y, cw, ch, area = stats[i]
-                if 22 <= cw <= 90 and 7 <= ch <= 26 and 120 <= area <= 1800:
-                    candidates.append((x, y, cw, ch, area))
+            # Merge overlapping bands.
+            merged = []
+            for y1, y2 in bands:
+                if merged and y1 <= merged[-1][1] + 4:
+                    merged[-1] = (merged[-1][0], max(merged[-1][1], y2))
+                else:
+                    merged.append((y1, y2))
 
-            # The personal badge is normally the leftmost small blue rectangle.
-            candidates.sort(key=lambda p: (p[1], p[0]))
-
-            for x, y, cw, ch, _ in candidates:
-                y1 = max(0, y - 7)
-                y2 = min(h, y + ch + 8)
-                x1 = min(w - 1, x + cw + 5)
-                if w - x1 < 30:
+            result = []
+            for y1, y2 in merged:
+                row = arr[y1:y2, :, :]
+                if row.shape[0] < 8:
                     continue
 
-                payload = arr[y1:y2, x1:w, :]
-                if payload.size == 0:
-                    continue
-
-                row_images = []
-
-                enlarged = cv2.resize(payload, None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC)
-                row_images.append(Image.fromarray(enlarged))
-
-                phsv = cv2.cvtColor(payload, cv2.COLOR_RGB2HSV)
-                pgray = cv2.cvtColor(payload, cv2.COLOR_RGB2GRAY)
-
-                bright = cv2.inRange(pgray, 105, 255)
-                bright = cv2.morphologyEx(bright, cv2.MORPH_CLOSE, np.ones((2,2), np.uint8))
-                bright = cv2.resize(bright, None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC)
-                row_images.append(Image.fromarray(bright))
-
-                color = cv2.inRange(
-                    phsv,
-                    np.array([0, 70, 70], dtype=np.uint8),
-                    np.array([179, 255, 255], dtype=np.uint8),
+                # Keep the entire row. Do not remove colored nickname/message.
+                up = cv2.resize(
+                    row, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC
                 )
-                color = cv2.morphologyEx(color, cv2.MORPH_CLOSE, np.ones((2,2), np.uint8))
-                color = cv2.resize(color, None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC)
-                row_images.append(Image.fromarray(color))
+                result.append(Image.fromarray(up))
 
-                clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8,8))
-                contrast = clahe.apply(pgray)
-                contrast = cv2.resize(contrast, None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC)
-                row_images.append(Image.fromarray(contrast))
+                # Simple white/bright-text version.
+                gray = cv2.cvtColor(row, cv2.COLOR_RGB2GRAY)
+                bright = cv2.inRange(gray, 95, 255)
+                bright = cv2.resize(
+                    bright, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC
+                )
+                result.append(Image.fromarray(bright))
 
-                return row_images
-
-            return []
+            return result
         except Exception as exc:
-            msg = f"blue-row OCR: {type(exc).__name__}: {exc}"
+            msg = f"blue-row capture: {type(exc).__name__}: {exc}"
             if msg not in self.ocr_runtime_errors:
                 self.ocr_runtime_errors.append(msg)
             return []
 
+    def get_chat_row_preview(self, image):
+        """Return the first detected personal-chat row for the diagnostic window."""
+        rows = self._blue_row_crops(image)
+        return rows[0] if rows else image
 
     def _ocr_variants(self, image):
         """Prepare several chat-specific images for OCR.
