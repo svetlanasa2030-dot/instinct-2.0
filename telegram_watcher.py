@@ -3,11 +3,13 @@ import os
 import time
 import requests
 
+RAPIDOCR_IMPORT_ERROR = ""
 try:
     from rapidocr import RapidOCR, EngineType, LangDet, LangRec, ModelType, OCRVersion
-except Exception:
+except Exception as exc:
     RapidOCR = None
     EngineType = LangDet = LangRec = ModelType = OCRVersion = None
+    RAPIDOCR_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
 
 class TelegramWatcher:
@@ -33,7 +35,10 @@ class TelegramWatcher:
             self.ocr_cyrillic = self._create_ocr(LangRec.CYRILLIC)
             self.ocr_chinese = self._create_ocr(LangRec.CH)
         else:
-            self.ocr_errors.append("RapidOCR не импортирован")
+            self.ocr_errors.append(
+                "RapidOCR не импортирован"
+                + (f": {RAPIDOCR_IMPORT_ERROR}" if RAPIDOCR_IMPORT_ERROR else "")
+            )
         self.ocr_init_status = (
             "RapidOCR: Cyrillic + Chinese"
             if (self.ocr_cyrillic or self.ocr_chinese)
