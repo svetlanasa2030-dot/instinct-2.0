@@ -233,60 +233,66 @@ class App:
         if not self.telegram.region:
             messagebox.showwarning("Область чата", "Сначала выберите область чата.")
             return
+
         x, y, w, h = self.telegram.region
-        try:
-            # Hide the main window while capturing so it can never cover the
-            # selected area. Restore it immediately after the screenshot.
-            self.root.withdraw()
-            self.root.update_idletasks()
-            image = pyautogui.screenshot(
-                region=(int(x), int(y), int(w), int(h))
-            )
-            self.root.deiconify()
-            text, ocr_engine = self.telegram.recognize(image)
-            is_new, new_status = self.telegram.check_new_message(text)
-            self.status_var.set(f"Проверка чата: {new_status}")
+        viewer = tk.Toplevel(self.root)
+        viewer.title("Проверить область чата")
+        viewer.geometry("900x760")
 
-            viewer = tk.Toplevel(self.root)
-            viewer.title("Проверить область чата")
-            viewer.geometry("900x760")
-            ttk.Label(
-                viewer,
-                text=f"Координаты: X={x}, Y={y}, W={w}, H={h}"
-            ).pack(pady=8)
-            ttk.Label(
-                viewer,
-                text=f"Новое сообщение: {'ДА' if is_new else 'НЕТ'}",
-                font=("Segoe UI", 11, "bold")
-            ).pack(pady=(0, 4))
-            ttk.Label(viewer, text=new_status).pack(pady=(0, 4))
-            ttk.Label(viewer, text=f"OCR: {ocr_engine}").pack(pady=(0, 8))
+        ttk.Label(
+            viewer, text=f"Координаты: X={x}, Y={y}, W={w}, H={h}"
+        ).pack(pady=8)
+        state = ttk.Label(viewer, text="Состояние: Распознавание...")
+        state.pack(pady=4)
+        ocr_label = ttk.Label(viewer, text="OCR: запускается...")
+        ocr_label.pack(pady=4)
 
-            # Show the exact chat screenshot and, below it, the row
-            # that the OCR actually receives.
-            from PIL import ImageTk
-            preview = ImageTk.PhotoImage(image)
-            preview_label = ttk.Label(viewer, image=preview)
-            preview_label.pack(fill="x", padx=10, pady=(0, 8))
-            preview_label.image = preview
+        from PIL import ImageTk
+        image_label = ttk.Label(viewer)
+        image_label.pack(fill="x", padx=10, pady=8)
 
-            row_preview = self.telegram.get_chat_row_preview(image)
-            ttk.Label(viewer, text="Строка, переданная в OCR:").pack(pady=(2, 4))
-            row_photo = ImageTk.PhotoImage(row_preview)
-            row_label = ttk.Label(viewer, image=row_photo)
-            row_label.pack(fill="x", padx=10, pady=(0, 8))
-            row_label.image = row_photo
+        box = tk.Text(viewer, wrap="word", height=12)
+        box.pack(fill="both", expand=True, padx=10, pady=10)
+        box.insert("1.0", "Распознавание...")
+        box.configure(state="disabled")
 
-            box = tk.Text(viewer, wrap="word", height=12)
-            box.pack(fill="both", expand=True, padx=10, pady=10)
-            box.insert("1.0", text or "Текст не распознан.")
+        def set_box(value):
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            box.insert("1.0", value or "Текст не распознан.")
             box.configure(state="disabled")
-        except Exception as exc:
+
+        def worker():
             try:
-                self.root.deiconify()
-            except Exception:
-                pass
-            messagebox.showerror("OCR", str(exc))
+                image = pyautogui.screenshot(
+                    region=(int(x), int(y), int(w), int(h))
+                )
+                text, ocr_engine = self.telegram.recognize(image)
+                is_new, new_status = self.telegram.check_new_message(text)
+
+                def done():
+                    if not viewer.winfo_exists():
+                        return
+                    photo = ImageTk.PhotoImage(image)
+                    image_label.configure(image=photo)
+                    image_label.image = photo
+                    state.configure(
+                        text=f"Состояние: {'Новое сообщение' if is_new else 'Готово'}"
+                    )
+                    ocr_label.configure(text=f"OCR: {ocr_engine}")
+                    set_box(text)
+                    self.status_var.set(f"Проверка чата: {new_status}")
+
+                self.root.after(0, done)
+            except Exception as exc:
+                def failed():
+                    if viewer.winfo_exists():
+                        state.configure(text="Состояние: Ошибка")
+                        set_box(str(exc))
+                    self.status_var.set(f"Проверка чата: ошибка — {exc}")
+                self.root.after(0, failed)
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
     def select_point(self):
