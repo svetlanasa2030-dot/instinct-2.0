@@ -232,12 +232,34 @@ class TelegramWatcher:
 
             crops = []
             for y1, y2 in merged:
-                crop = Image.fromarray(arr[y1:y2, :, :])
+                # Keep the complete row: nickname/message may use any color.
+                crop_arr = arr[y1:y2, :, :]
+                crop = Image.fromarray(crop_arr)
                 crop = crop.resize(
-                    (crop.width * 5, crop.height * 5),
+                    (crop.width * 6, crop.height * 6),
                     Image.Resampling.LANCZOS
                 )
                 crops.append(crop)
+
+                # Add a high-contrast text-only version. This is important
+                # when the game background is textured/transparent and OCR
+                # cannot detect glyphs on the original screenshot.
+                try:
+                    gray = cv2.cvtColor(crop_arr, cv2.COLOR_RGB2GRAY)
+                    hsv_row = cv2.cvtColor(crop_arr, cv2.COLOR_RGB2HSV)
+                    bright = cv2.inRange(gray, 105, 255)
+                    saturated = cv2.inRange(hsv_row, np.array([0, 45, 70]), np.array([179, 255, 255]))
+                    clean = cv2.bitwise_or(bright, saturated)
+                    # Remove isolated noise while preserving small glyphs.
+                    clean = cv2.morphologyEx(
+                        clean, cv2.MORPH_CLOSE, np.ones((2, 2), np.uint8)
+                    )
+                    clean = cv2.resize(
+                        clean, None, fx=6, fy=6, interpolation=cv2.INTER_CUBIC
+                    )
+                    crops.append(Image.fromarray(clean))
+                except Exception:
+                    pass
             return crops
         except Exception:
             return []
@@ -309,6 +331,10 @@ class TelegramWatcher:
             score += 10000.0
         cyr = sum(("А" <= ch <= "я") or ch in "Ёё" for ch in text)
         score += cyr * 12.0
+        cjk = sum("\\u3400" <= ch <= "\\u4dbf" or "\\u4e00" <= ch <= "\\u9fff" for ch in text)
+        score += cjk * 18.0
+        if "шепчет" in text.lower():
+            score += 5000.0
         # Penalize obvious OCR noise instead of rewarding long garbage.
         replacement_noise = sum(ch in "{}<>|" for ch in text)
         score -= replacement_noise * 8.0
