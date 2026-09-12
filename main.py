@@ -63,23 +63,24 @@ class App:
         ).grid(row=4, column=0, columnspan=2, pady=(10, 6))
 
         ttk.Button(frame, text="Настроить Telegram", command=self.configure_telegram).grid(row=4, column=0, columnspan=2, pady=6, sticky="ew")
-        ttk.Button(frame, text="Проверить Telegram", command=self.test_telegram).grid(row=5, column=0, columnspan=2, pady=6, sticky="ew")
+        ttk.Button(frame, text="Указать своё имя", command=self.configure_owner_name).grid(row=5, column=0, columnspan=2, pady=6, sticky="ew")
+        ttk.Button(frame, text="Проверить Telegram", command=self.test_telegram).grid(row=6, column=0, columnspan=2, pady=6, sticky="ew")
         ttk.Button(frame, text="Выбрать область чата", command=self.select_chat_region).grid(row=6, column=0, columnspan=2, pady=6, sticky="ew")
-        ttk.Button(frame, text="Проверить область чата", command=self.check_chat_region).grid(row=7, column=0, columnspan=2, pady=6, sticky="ew")
-        ttk.Button(frame, text="Журнал Telegram", command=self.show_telegram_log).grid(row=8, column=0, columnspan=2, pady=6, sticky="ew")
+        ttk.Button(frame, text="Проверить область чата", command=self.check_chat_region).grid(row=8, column=0, columnspan=2, pady=6, sticky="ew")
+        ttk.Button(frame, text="Журнал Telegram", command=self.show_telegram_log).grid(row=9, column=0, columnspan=2, pady=6, sticky="ew")
         buttons = ttk.Frame(frame)
-        buttons.grid(row=9, column=0, columnspan=2, pady=12)
+        buttons.grid(row=10, column=0, columnspan=2, pady=12)
         self.start_btn = ttk.Button(buttons, text="Старт", command=self.start)
         self.start_btn.grid(row=0, column=0, padx=5)
         self.stop_btn = ttk.Button(buttons, text="Стоп", command=self.stop, state="disabled")
         self.stop_btn.grid(row=0, column=1, padx=5)
 
-        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=10, column=0, columnspan=2, pady=(4, 2))
+        ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=11, column=0, columnspan=2, pady=(4, 2))
         ttk.Label(frame, textvariable=self.status_var).grid(
             row=11, column=0, columnspan=2, pady=4
         )
         ttk.Label(frame, text="F8 — запуск / остановка").grid(
-            row=12, column=0, columnspan=2, pady=(10, 0)
+            row=13, column=0, columnspan=2, pady=(10, 0)
         )
 
         self.root.bind("<F8>", lambda _event: self.toggle())
@@ -101,6 +102,30 @@ class App:
             self.status_var.set("Telegram сохранён")
             win.destroy()
         ttk.Button(frame, text="Сохранить", command=save).grid(row=2, column=0, columnspan=2, pady=10)
+
+    def configure_owner_name(self):
+        win = tk.Toplevel(self.root)
+        win.title("Ваше имя")
+        win.resizable(False, False)
+        frame = ttk.Frame(win, padding=14)
+        frame.grid()
+        ttk.Label(frame, text="Как вас называть?").grid(row=0, column=0, pady=5)
+        name_var = tk.StringVar(value=self.telegram.owner_name)
+        entry = ttk.Entry(frame, textvariable=name_var, width=32)
+        entry.grid(row=1, column=0, pady=5)
+        entry.focus_set()
+
+        def save():
+            name = name_var.get().strip()
+            if not name:
+                messagebox.showwarning("Имя", "Введите имя.")
+                return
+            self.telegram.set_owner_name(name)
+            self.status_var.set(f"Имя сохранено: {name}")
+            win.destroy()
+
+        ttk.Button(frame, text="Сохранить", command=save).grid(row=2, column=0, pady=8)
+        entry.bind("<Return>", lambda _event: save())
 
     def test_telegram(self):
         if not self.telegram.token or not self.telegram.chat_id:
