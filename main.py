@@ -77,10 +77,10 @@ class App:
 
         ttk.Label(frame, textvariable=self.timer_var, font=("Segoe UI", 12, "bold")).grid(row=11, column=0, columnspan=2, pady=(4, 2))
         ttk.Label(frame, textvariable=self.status_var).grid(
-            row=11, column=0, columnspan=2, pady=4
+            row=12, column=0, columnspan=2, pady=4
         )
         ttk.Label(frame, text="F8 — запуск / остановка").grid(
-            row=13, column=0, columnspan=2, pady=(10, 0)
+            row=14, column=0, columnspan=2, pady=(10, 0)
         )
 
         self.root.bind("<F8>", lambda _event: self.toggle())
