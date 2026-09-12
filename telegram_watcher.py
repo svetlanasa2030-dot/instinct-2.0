@@ -402,42 +402,32 @@ class TelegramWatcher:
         )
 
     def check_new_message(self, text):
-        messages = self.extract_personal_all(text)
-        if not messages:
-            return False, "НЕТ — сообщений «Лично» не найдено"
-        fresh = []
-        for player, message in messages:
-            if f"{player}\n{message}" not in self.seen:
-                fresh.append((player, message))
-        if fresh:
-            return True, f"ДА — новых сообщений: {len(fresh)}"
-        return False, "НЕТ — сообщения уже обработаны"
+        # Simple detection: any OCR text containing the fixed word "Лично"
+        # means a private message is visible in the selected chat area.
+        if "Лично" in (text or ""):
+            return True, "ДА — найдено сообщение «Лично»"
+        return False, "НЕТ — «Лично» не найдено"
 
     def process_ocr_text(self, text):
-        statuses = []
-        sent_any = False
+        """Send one short Telegram alert when 'Лично' appears anywhere in OCR."""
         self.last_results = []
+        normalized = (text or "").strip()
+        if "Лично" not in normalized:
+            return False, "НЕТ — «Лично» не найдено"
 
-        for player, message in self.extract_personal_all(text):
-            key = f"{player}\n{message}"
-            if key in self.seen:
-                status = "ПОВТОР — не отправлено"
-                statuses.append(status)
-                self.last_results.append((player, message, False, status))
-                continue
+        # Prevent the same visible OCR block from generating repeated alerts.
+        key = normalized
+        if key in self.seen:
+            status = "ПОВТОР — не отправлено"
+            self.last_results.append(("", "", False, status))
+            return False, status
 
-            ok, status = self._send(f"Игрок: {player}\nСообщение: {message}")
-            statuses.append(status)
-            self.last_results.append((player, message, ok, status))
-
-            # Mark as processed only after Telegram confirms delivery.
-            if ok:
-                self.seen.add(key)
-                sent_any = True
-
-        if not statuses:
-            return False, None
-        return sent_any, statuses[-1]
+        ok, status = self._send("Вам написали в ЛС")
+        self.last_results.append(("", "", ok, status))
+        if ok:
+            self.seen.add(key)
+            return True, status
+        return False, status
 
     def stop(self):
         self.stop_event.set()
