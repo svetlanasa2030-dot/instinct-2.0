@@ -46,6 +46,8 @@ class App:
         self.night_status_var = tk.StringVar(value="Ночной режим: выключен")
         self.night_stop = threading.Event()
         self.night_worker = None
+        # Prevent the normal scheduler and night scheduler from pressing keys simultaneously.
+        self.input_lock = threading.Lock()
 
 
         frame = ttk.Frame(root, padding=18)
@@ -307,13 +309,14 @@ class App:
         return now >= start or now <= end
 
     def _night_action(self):
-        pyautogui.moveTo(self.x, self.y, duration=0.15)
-        pyautogui.click(self.x, self.y)
-        pyautogui.press("up")
-        pyautogui.press("enter")
-        if self.night_stop.wait(3):
-            return
-        pyautogui.press("enter")
+        with self.input_lock:
+            pyautogui.moveTo(self.x, self.y, duration=0.15)
+            pyautogui.click(self.x, self.y)
+            pyautogui.press("up")
+            pyautogui.press("enter")
+            if self.night_stop.wait(3):
+                return
+            pyautogui.press("enter")
 
     def night_loop(self):
         intervals = [9, 24, 35, 40]
@@ -487,6 +490,15 @@ class App:
 
         while not self.stop_event.is_set():
             try:
+                # Ночной режим имеет приоритет над обычной отправкой.
+                # Пока заданное ночное окно активно, обычная отправка
+                # 4/5/6/7 минут полностью приостанавливается.
+                if self._night_active():
+                    self.root.after(0, self.timer_var.set, "Ночной режим: обычная отправка приостановлена")
+                    while not self.stop_event.is_set() and self._night_active():
+                        self.stop_event.wait(0.5)
+                    continue
+
                 # Каждый запуск выбирает новое время. Одинаковое значение
                 # два раза подряд не допускается.
                 choices = [m for m in intervals if m != previous_interval]
@@ -494,17 +506,24 @@ class App:
                 previous_interval = interval_minutes
                 interval = interval_minutes * 60
 
+                # Повторно проверяем режим непосредственно перед нажатием.
+                if self._night_active():
+                    continue
+
                 # Последовательность команды НЕ меняется:
                 # точка -> клик -> ↑ -> Enter -> 3 сек -> Enter.
-                pyautogui.moveTo(x, y, duration=0.15)
-                pyautogui.click(x, y)
-                pyautogui.press("up")
-                pyautogui.press("enter")
+                with self.input_lock:
+                    if self._night_active():
+                        continue
+                    pyautogui.moveTo(x, y, duration=0.15)
+                    pyautogui.click(x, y)
+                    pyautogui.press("up")
+                    pyautogui.press("enter")
 
-                if self.stop_event.wait(3):
-                    break
+                    if self.stop_event.wait(3):
+                        break
+                    pyautogui.press("enter")
 
-                pyautogui.press("enter")
                 self.root.after(
                     0,
                     self.status_var.set,
@@ -513,6 +532,11 @@ class App:
 
                 end_time = time.monotonic() + interval
                 while not self.stop_event.is_set():
+                    # Если наступило ночное окно, обычный таймер сразу
+                    # прерывается — не ждём окончания 4/5/6/7 минут.
+                    if self._night_active():
+                        self.root.after(0, self.timer_var.set, "Ночной режим: обычная отправка приостановлена")
+                        break
                     remaining = max(0, end_time - time.monotonic())
                     self.root.after(
                         0,
