@@ -25,10 +25,6 @@ class TelegramWatcher:
         self.stop_event = __import__("threading").Event()
         self.seen = set()
         self.last_results = []
-        # Two recognition models are used because the fixed chat words are
-        # Cyrillic while the player name may be Chinese, Latin, Cyrillic,
-        # digits or mixed. PP-OCRv5 provides dedicated models for these
-        # scripts; no whitelist is applied to the extracted nickname.
         self.ocr_cyrillic = None
         self.ocr_chinese = None
         self.ocr_errors = []
@@ -52,7 +48,6 @@ class TelegramWatcher:
         try:
             return RapidOCR(params={
                 "Det.engine_type": EngineType.ONNXRUNTIME,
-                # MULTI detection is more tolerant of mixed-language player names.
                 "Det.lang_type": LangDet.CH,
                 "Det.model_type": ModelType.MOBILE,
                 "Det.ocr_version": OCRVersion.PPOCRV5,
@@ -98,121 +93,38 @@ class TelegramWatcher:
 
     @staticmethod
     def _personal_messages(text):
-        """Extract only personal-message rows.
-
-        The game format is fixed:
-            Лично [НИК] шепчет: [СООБЩЕНИЕ]
-
-        "Лично" and "шепчет:" are fixed UI words. OCR may distort the
-        spelling of "шепчет", especially for mixed/CJK rows, so the parser
-        uses the colon as the boundary and removes the final OCR token before
-        it. The nickname itself has no character whitelist.
-        """
         import re
 
         lines = [line.strip() for line in text.splitlines() if line.strip()]
         messages = []
-        i = 0
-
-        # Common OCR variants of the fixed word "шепчет".
-        whisper_re = re.compile(
-            r"(?:шепчет|uenhe?t|uenve?t|uenet|шеп[чч]ет|"
-            r"whisper|whe?sp[e3]r)\\s*:",
-            re.IGNORECASE
-        )
-
-        while i < len(lines):
-            line = lines[i]
-            marker = line.find("Лично")
-            if marker < 0:
-                # OCR may split "Лично" slightly; do not accept arbitrary
-                # lines because only blue-row crops are allowed upstream.
-                i += 1
+        for line in lines:
+            marker = re.search(r"Лично", line, re.IGNORECASE)
+            if not marker:
                 continue
 
-            payload = line[marker + len("Лично"):].strip()
-            payload = payload.lstrip(" )]}:;-—–")
-
-            # Marker can be on its own line; combine with the following row.
-            if not payload and i + 1 < len(lines):
-                payload = lines[i + 1].strip()
-                i += 1
-
+            payload = line[marker.end():].strip().lstrip(" )]}:;-—–")
             if not payload:
-                i += 1
                 continue
 
-            player = ""
-            message = ""
-
-            # Preferred path: fixed whisper marker was recognized.
-            m = whisper_re.search(payload)
-            if m:
-                player = payload[:m.start()].strip()
-                message = payload[m.end():].strip()
-            elif ":" in payload:
-                # OCR distorted "шепчет", but the colon survived.
-                # Everything before the final colon consists of:
-                #     nickname + distorted fixed marker
+            # The exact game row is: Лично [ИМЯ] шепчет: [СООБЩЕНИЕ].
+            # The alert only needs the fact that "Лично" was found, while
+            # keeping extraction available for the journal.
+            if ":" in payload:
                 before, message = payload.rsplit(":", 1)
-                before = before.rstrip()
-
-                # Remove the OCR representation of the fixed marker.
-                # Keep the nickname untouched, including CJK/symbols/spaces.
-                marker_removed = re.sub(
-                    r"\\s+(?:[^\\s:]{2,12})$",
-                    "",
-                    before
-                )
-                player = marker_removed.strip()
+                parts = before.split()
+                player = parts[0].strip("()[]{}:;-—–") if parts else ""
+                if len(parts) > 1:
+                    player = " ".join(parts[:-1]).strip("()[]{}:;-—–")
+                message = message.strip()
             else:
-                # No separator yet: try the next line as continuation.
-                if i + 1 < len(lines):
-                    next_line = lines[i + 1].strip()
-                    if ":" in next_line:
-                        payload = payload + " " + next_line
-                        i += 1
-                        before, message = payload.rsplit(":", 1)
-                        marker_removed = re.sub(
-                            r"\\s+(?:[^\\s:]{2,12})$",
-                            "",
-                            before.rstrip()
-                        )
-                        player = marker_removed.strip()
+                player = payload.strip("()[]{}:;-—–")
+                message = ""
 
-            player = player.strip(" ()[]{}:;-—–")
-            message = message.strip()
-
-            # Never send a malformed result.
             if player and message and player != message:
                 messages.append((player, message))
 
-            i += 1
-
         return messages
 
-    @classmethod
-    def _personal_payload(cls,text):
-        """Parse [nickname] [fixed whisper marker]: [message]."""
-        for line in [x.strip() for x in text.splitlines() if x.strip()]:
-            if ":" not in line: continue
-            before,message=line.rsplit(":",1)
-            parts=before.rstrip().rsplit(None,1)
-            if len(parts)!=2 or not message.strip(): continue
-            player=parts[0].strip(" ()[]{}:;-—–")
-            marker=parts[1].strip(" ()[]{}:;-—–").lower()
-            marker_compact = marker.replace("ё", "е").replace("0", "о").replace("1", "и")
-            known_variants = {
-                "шепчет", "шепет", "шепчетъ",
-                "uenhet", "uenvet", "uenve", "uenet",
-                "uенheт", "uенveт"
-            }
-            if marker_compact in known_variants or (
-                2 <= len(marker_compact) <= 12
-                and any(ch in marker_compact for ch in "uеeнhvcтш")
-            ):
-                return player,message.strip()
-        return None
     @classmethod
     def extract_personal(cls, text):
         messages = cls._personal_messages(text)
@@ -223,7 +135,6 @@ class TelegramWatcher:
         return cls._personal_messages(text)
 
     def _ocr_space(self, image):
-        """OCR.Space fallback for the selected chat image."""
         try:
             buf = io.BytesIO()
             image.save(buf, format="PNG")
@@ -255,26 +166,22 @@ class TelegramWatcher:
             return ""
 
     def _blue_row_crops(self, image):
-        """Simple mode: return the selected chat image unchanged."""
         return [image]
 
     def get_chat_row_preview(self, image):
         return image
 
     def _ocr_variants(self, image):
-        """Simple mode: one enlarged copy of the selected chat."""
         try:
             import cv2
             import numpy as np
             arr = np.asarray(image.convert("RGB"))
-            enlarged = cv2.resize(
-                arr, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC
-            )
+            enlarged = cv2.resize(arr, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
             return [("chat", Image.fromarray(enlarged))]
         except Exception:
             return [("chat", image)]
 
-
+    @staticmethod
     def _score_ocr(text, confidence=0.0):
         if not text:
             return -100000.0
@@ -283,11 +190,10 @@ class TelegramWatcher:
             score += 10000.0
         cyr = sum(("А" <= ch <= "я") or ch in "Ёё" for ch in text)
         score += cyr * 12.0
-        cjk = sum("\\u3400" <= ch <= "\\u4dbf" or "\\u4e00" <= ch <= "\\u9fff" for ch in text)
+        cjk = sum("\u3400" <= ch <= "\u4dbf" or "\u4e00" <= ch <= "\u9fff" for ch in text)
         score += cjk * 18.0
         if "шепчет" in text.lower():
             score += 5000.0
-        # Penalize obvious OCR noise instead of rewarding long garbage.
         replacement_noise = sum(ch in "{}<>|" for ch in text)
         score -= replacement_noise * 8.0
         return score
@@ -326,61 +232,23 @@ class TelegramWatcher:
         return "", 0.0
 
     @staticmethod
-    def _has_cjk(text):
-        return any(
-            "\u3400" <= ch <= "\u4dbf" or "\u4e00" <= ch <= "\u9fff"
-            or "\u3040" <= ch <= "\u30ff"
-            for ch in text
-        )
-
-    @classmethod
-    def _merge_multilingual_nickname(cls, cyr_text, ch_text):
-        """Use Cyrillic OCR for the fixed Russian markers and Chinese OCR
-        when the nickname itself contains CJK characters.
-        """
-        base = cls._personal_messages(cyr_text)
-        if not base:
-            return cls._personal_messages(ch_text)
-
-        player, message = base[0]
-
-        # Chinese/Japanese OCR can read a CJK nickname even when the
-        # Cyrillic model cannot. Prefer the CJK run only for the nickname;
-        # never alter the message body.
-        ch_lines = [x.strip() for x in ch_text.splitlines() if x.strip()]
-        for line in ch_lines:
-            if cls._has_cjk(line):
-                # Pick the token containing CJK/Japanese characters and
-                # keep adjacent letters, digits and symbols such as _ or ★.
-                import unicodedata
-                tokens = []
-                token = []
-                for ch in line:
-                    cat = unicodedata.category(ch)
-                    if ch.isspace() or cat.startswith("P"):
-                        if token:
-                            tokens.append("".join(token))
-                            token = []
-                    else:
-                        token.append(ch)
-                if token:
-                    tokens.append("".join(token))
-
-                for token in tokens:
-                    if cls._has_cjk(token):
-                        player = token.strip()
-                        break
-                if player and cls._has_cjk(player):
-                    break
-
-        return [(player, message)]
+    def _contains_personal_marker(text):
+        import re
+        if not text:
+            return False
+        normalized = text.replace("ё", "е").replace("Ё", "Е")
+        # Accept small OCR spacing/punctuation differences around the word.
+        return bool(re.search(r"Лично", normalized, re.IGNORECASE))
 
     def recognize(self, image):
-        """Simple, non-blocking-friendly OCR: one image, local RapidOCR."""
+        """Run both OCR models and keep all useful results.
+
+        Important: do not discard the Cyrillic result just because another
+        OCR model has a higher confidence. The trigger word "Лично" is
+        Russian, so any OCR result containing it must be preserved.
+        """
         variants = self._ocr_variants(image)
-        best_text = ""
-        best_conf = -1.0
-        best_engine = "OCR не распознал текст"
+        results = []
 
         for variant_name, variant in variants:
             for engine, label in (
@@ -388,13 +256,17 @@ class TelegramWatcher:
                 (self.ocr_chinese, "Chinese/Latin"),
             ):
                 text, confidence = self._run_rapidocr(variant, engine)
-                if text and confidence > best_conf:
-                    best_text = text
-                    best_conf = confidence
-                    best_engine = f"RapidOCR {label}"
+                if text.strip():
+                    results.append((text.strip(), confidence, f"RapidOCR {label}"))
 
-        if best_text.strip():
-            return best_text.strip(), best_engine
+        if results:
+            personal = [r for r in results if self._contains_personal_marker(r[0])]
+            if personal:
+                # Prefer the result that actually contains the trigger.
+                best = max(personal, key=lambda item: item[1])
+            else:
+                best = max(results, key=lambda item: item[1])
+            return best[0], best[2]
 
         diagnostics = []
         if self.ocr_errors:
@@ -406,27 +278,26 @@ class TelegramWatcher:
         )
 
     def check_new_message(self, text):
-        # Simple detection: any OCR text containing the fixed word "Лично"
-        # means a private message is visible in the selected chat area.
-        if "Лично" in (text or ""):
+        if self._contains_personal_marker(text):
             return True, "ДА — найдено сообщение «Лично»"
         return False, "НЕТ — «Лично» не найдено"
 
     def process_ocr_text(self, text):
-        """Send one short Telegram alert when 'Лично' appears anywhere in OCR."""
+        """Send exactly one alert for each newly seen OCR block containing 'Лично'."""
         self.last_results = []
         normalized = (text or "").strip()
-        if "Лично" not in normalized:
+        if not self._contains_personal_marker(normalized):
             return False, "НЕТ — «Лично» не найдено"
 
-        # Prevent the same visible OCR block from generating repeated alerts.
         key = normalized
         if key in self.seen:
             status = "ПОВТОР — не отправлено"
             self.last_results.append(("", "", False, status))
             return False, status
 
-        ok, status = self._send(f"{self.owner_name + ", " if self.owner_name else ""}вам написали в ЛС")
+        # Desired Telegram format: "<имя> Вам пишут в лс!"
+        alert = f"{self.owner_name} Вам пишут в лс!" if self.owner_name else "Вам пишут в лс!"
+        ok, status = self._send(alert)
         self.last_results.append(("", "", ok, status))
         if ok:
             self.seen.add(key)
