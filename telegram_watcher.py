@@ -1,6 +1,7 @@
 import io
 import os
 import time
+import re
 import requests
 from PIL import Image
 
@@ -14,8 +15,6 @@ except Exception as exc:
 
 
 class TelegramWatcher:
-    """OCR watcher for a selected game-chat region."""
-
     def __init__(self, token="", chat_id="", region=None, ocrspace_key="", owner_name=""):
         self.token = token.strip()
         self.chat_id = chat_id.strip()
@@ -34,15 +33,7 @@ class TelegramWatcher:
             self.ocr_cyrillic = self._create_ocr(LangRec.CYRILLIC)
             self.ocr_chinese = self._create_ocr(LangRec.CH)
         else:
-            self.ocr_errors.append(
-                "RapidOCR не импортирован"
-                + (f": {RAPIDOCR_IMPORT_ERROR}" if RAPIDOCR_IMPORT_ERROR else "")
-            )
-        self.ocr_init_status = (
-            "RapidOCR: Cyrillic + Chinese"
-            if (self.ocr_cyrillic or self.ocr_chinese)
-            else "RapidOCR не загрузился"
-        )
+            self.ocr_errors.append("RapidOCR не импортирован" + (f": {RAPIDOCR_IMPORT_ERROR}" if RAPIDOCR_IMPORT_ERROR else ""))
 
     def _create_ocr(self, language):
         try:
@@ -51,8 +42,8 @@ class TelegramWatcher:
                 "Det.lang_type": LangDet.CH,
                 "Det.model_type": ModelType.MOBILE,
                 "Det.ocr_version": OCRVersion.PPOCRV5,
-                "Det.thresh": 0.20,
-                "Det.box_thresh": 0.30,
+                "Det.thresh": 0.12,
+                "Det.box_thresh": 0.20,
                 "Det.unclip_ratio": 1.8,
                 "Rec.engine_type": EngineType.ONNXRUNTIME,
                 "Rec.lang_type": language,
@@ -60,12 +51,11 @@ class TelegramWatcher:
                 "Rec.ocr_version": OCRVersion.PPOCRV5,
             })
         except Exception as exc:
-            self.ocr_errors.append(f"{language.value}: {type(exc).__name__}: {exc}")
+            self.ocr_errors.append(f"{getattr(language, 'value', language)}: {type(exc).__name__}: {exc}")
             return None
 
     def set_credentials(self, token, chat_id):
-        self.token = token.strip()
-        self.chat_id = chat_id.strip()
+        self.token, self.chat_id = token.strip(), chat_id.strip()
 
     def set_owner_name(self, name):
         self.owner_name = name.strip()
@@ -77,12 +67,12 @@ class TelegramWatcher:
         return self._send("Instinct 2.0: Telegram подключён.", retries=1)
 
     def _send(self, text, retries=3):
+        if not self.token or not self.chat_id:
+            return False, "НЕ ОТПРАВЛЕНО: не задан Bot Token или Chat ID"
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         for attempt in range(retries):
             try:
-                response = requests.post(
-                    url, json={"chat_id": self.chat_id, "text": text}, timeout=10
-                )
+                response = requests.post(url, json={"chat_id": self.chat_id, "text": text}, timeout=10)
                 if response.ok and response.json().get("ok"):
                     return True, "ОТПРАВЛЕНО"
             except requests.RequestException:
@@ -91,116 +81,30 @@ class TelegramWatcher:
                 time.sleep(1)
         return False, f"НЕ ОТПРАВЛЕНО после {retries} попыток"
 
-    @staticmethod
-    def _personal_messages(text):
-        import re
-
-        lines = [line.strip() for line in text.splitlines() if line.strip()]
-        messages = []
-        for line in lines:
-            marker = re.search(r"Лично", line, re.IGNORECASE)
-            if not marker:
-                continue
-
-            payload = line[marker.end():].strip().lstrip(" )]}:;-—–")
-            if not payload:
-                continue
-
-            # The exact game row is: Лично [ИМЯ] шепчет: [СООБЩЕНИЕ].
-            # The alert only needs the fact that "Лично" was found, while
-            # keeping extraction available for the journal.
-            if ":" in payload:
-                before, message = payload.rsplit(":", 1)
-                parts = before.split()
-                player = parts[0].strip("()[]{}:;-—–") if parts else ""
-                if len(parts) > 1:
-                    player = " ".join(parts[:-1]).strip("()[]{}:;-—–")
-                message = message.strip()
-            else:
-                player = payload.strip("()[]{}:;-—–")
-                message = ""
-
-            if player and message and player != message:
-                messages.append((player, message))
-
-        return messages
-
-    @classmethod
-    def extract_personal(cls, text):
-        messages = cls._personal_messages(text)
-        return messages[0] if messages else None
-
-    @classmethod
-    def extract_personal_all(cls, text):
-        return cls._personal_messages(text)
-
-    def _ocr_space(self, image):
-        try:
-            buf = io.BytesIO()
-            image.save(buf, format="PNG")
-            response = requests.post(
-                "https://api.ocr.space/parse/image",
-                files={"file": ("chat.png", buf.getvalue(), "image/png")},
-                data={
-                    "apikey": self.ocrspace_key,
-                    "language": "auto",
-                    "OCREngine": "2",
-                    "isOverlayRequired": "false",
-                    "scale": "true",
-                    "detectOrientation": "true",
-                },
-                timeout=20,
-            )
-            if not response.ok:
-                self.ocrspace_error = f"HTTP {response.status_code}"
-                return ""
-            data = response.json()
-            if data.get("IsErroredOnProcessing"):
-                errors = data.get("ErrorMessage") or data.get("ErrorDetails") or "OCR.Space error"
-                self.ocrspace_error = str(errors)
-                return ""
-            parsed = data.get("ParsedResults") or []
-            return "\n".join(p.get("ParsedText", "") for p in parsed).strip()
-        except (requests.RequestException, ValueError, OSError) as exc:
-            self.ocrspace_error = f"{type(exc).__name__}: {exc}"
-            return ""
-
-    def _blue_row_crops(self, image):
-        return [image]
-
-    def get_chat_row_preview(self, image):
-        return image
-
     def _ocr_variants(self, image):
         try:
             import cv2
             import numpy as np
             arr = np.asarray(image.convert("RGB"))
-            enlarged = cv2.resize(arr, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
-            return [("chat", Image.fromarray(enlarged))]
+            gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
+            gray = cv2.resize(gray, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+            variants = [
+                ("normal", Image.fromarray(cv2.cvtColor(cv2.resize(arr, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC), cv2.COLOR_RGB2BGR))),
+                ("gray", Image.fromarray(gray)),
+            ]
+            # Thresholded variants make the small fixed word «Лично» much easier to read.
+            for threshold in (150, 190, 220):
+                bw = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)[1]
+                variants.append((f"bw{threshold}", Image.fromarray(bw)))
+            # Sharpened grayscale.
+            blur = cv2.GaussianBlur(gray, (0, 0), 1.2)
+            sharp = cv2.addWeighted(gray, 1.8, blur, -0.8, 0)
+            variants.append(("sharp", Image.fromarray(sharp)))
+            return variants
         except Exception:
-            return [("chat", image)]
+            return [("original", image)]
 
-    @staticmethod
-    def _score_ocr(text, confidence=0.0):
-        if not text:
-            return -100000.0
-        score = float(confidence) * 100.0
-        if "Лично" in text:
-            score += 10000.0
-        cyr = sum(("А" <= ch <= "я") or ch in "Ёё" for ch in text)
-        score += cyr * 12.0
-        cjk = sum("\u3400" <= ch <= "\u4dbf" or "\u4e00" <= ch <= "\u9fff" for ch in text)
-        score += cjk * 18.0
-        if "шепчет" in text.lower():
-            score += 5000.0
-        replacement_noise = sum(ch in "{}<>|" for ch in text)
-        score -= replacement_noise * 8.0
-        return score
-
-    def _run_rapidocr(self, image, engine=None):
-        if engine is None:
-            engine = self.ocr_cyrillic
+    def _run_rapidocr(self, image, engine):
         if not engine:
             return "", 0.0
         try:
@@ -214,9 +118,8 @@ class TelegramWatcher:
                 confidence = sum(float(x) for x in scores) / len(scores) if scores else 0.0
                 return text, confidence
             if isinstance(result, (tuple, list)) and len(result) >= 2:
-                raw = result[0]
                 parts, scores = [], []
-                for item in raw or []:
+                for item in result[0] or []:
                     if len(item) >= 3:
                         parts.append(str(item[1]))
                         try:
@@ -228,29 +131,37 @@ class TelegramWatcher:
             msg = f"{type(exc).__name__}: {exc}"
             if msg not in self.ocr_runtime_errors:
                 self.ocr_runtime_errors.append(msg)
-            return "", 0.0
         return "", 0.0
 
     @staticmethod
     def _contains_personal_marker(text):
-        import re
         if not text:
             return False
-        normalized = text.replace("ё", "е").replace("Ё", "Е")
-        # Accept small OCR spacing/punctuation differences around the word.
-        return bool(re.search(r"Лично", normalized, re.IGNORECASE))
+        s = text.replace("ё", "е").replace("Ё", "Е")
+        if re.search(r"\bлично\b", s, re.IGNORECASE):
+            return True
+
+        # OCR often makes one or two mistakes in this small word.
+        # Accept only very close variants, not arbitrary Russian words.
+        for token in re.findall(r"[A-Za-zА-Яа-яЁё0-9]+", s):
+            t = token.lower()
+            t = t.replace("0", "о").replace("1", "и").replace("l", "л")
+            if len(t) == 5:
+                # Levenshtein distance <= 1 from «лично».
+                target = "лично"
+                prev = list(range(6))
+                for i, a in enumerate(t, 1):
+                    cur = [i]
+                    for j, b in enumerate(target, 1):
+                        cur.append(min(cur[-1] + 1, prev[j] + 1, prev[j-1] + (a != b)))
+                    prev = cur
+                if prev[-1] <= 1:
+                    return True
+        return False
 
     def recognize(self, image):
-        """Run both OCR models and keep all useful results.
-
-        Important: do not discard the Cyrillic result just because another
-        OCR model has a higher confidence. The trigger word "Лично" is
-        Russian, so any OCR result containing it must be preserved.
-        """
-        variants = self._ocr_variants(image)
         results = []
-
-        for variant_name, variant in variants:
+        for _, variant in self._ocr_variants(image):
             for engine, label in (
                 (self.ocr_cyrillic, "Cyrillic"),
                 (self.ocr_chinese, "Chinese/Latin"),
@@ -259,43 +170,43 @@ class TelegramWatcher:
                 if text.strip():
                     results.append((text.strip(), confidence, f"RapidOCR {label}"))
 
-        if results:
-            personal = [r for r in results if self._contains_personal_marker(r[0])]
-            if personal:
-                # Prefer the result that actually contains the trigger.
-                best = max(personal, key=lambda item: item[1])
-            else:
-                best = max(results, key=lambda item: item[1])
-            return best[0], best[2]
+        if not results:
+            diagnostics = []
+            if self.ocr_errors:
+                diagnostics.append("RapidOCR: " + " | ".join(self.ocr_errors))
+            if self.ocr_runtime_errors:
+                diagnostics.append("RapidOCR runtime: " + " | ".join(self.ocr_runtime_errors[-3:]))
+            return "", "OCR не распознал текст" + (" — " + " || ".join(diagnostics) if diagnostics else "")
 
-        diagnostics = []
-        if self.ocr_errors:
-            diagnostics.append("RapidOCR: " + " | ".join(self.ocr_errors))
-        if self.ocr_runtime_errors:
-            diagnostics.append("RapidOCR runtime: " + " | ".join(self.ocr_runtime_errors[-3:]))
-        return "", "OCR не распознал текст" + (
-            " — " + " || ".join(diagnostics) if diagnostics else ""
-        )
+        # Critical fix: do not select only one OCR result.
+        # If ANY preprocessing/model sees «Лично», preserve that text.
+        personal = [r for r in results if self._contains_personal_marker(r[0])]
+        if personal:
+            best = max(personal, key=lambda r: r[1])
+            return best[0], best[2]
+        best = max(results, key=lambda r: r[1])
+        return best[0], best[2]
 
     def check_new_message(self, text):
-        if self._contains_personal_marker(text):
-            return True, "ДА — найдено сообщение «Лично»"
-        return False, "НЕТ — «Лично» не найдено"
+        return (
+            (True, "ДА — найдено сообщение «Лично»")
+            if self._contains_personal_marker(text)
+            else (False, "НЕТ — «Лично» не найдено")
+        )
 
     def process_ocr_text(self, text):
-        """Send exactly one alert for each newly seen OCR block containing 'Лично'."""
         self.last_results = []
         normalized = (text or "").strip()
         if not self._contains_personal_marker(normalized):
             return False, "НЕТ — «Лично» не найдено"
 
+        # One alert per stable OCR block.
         key = normalized
         if key in self.seen:
             status = "ПОВТОР — не отправлено"
             self.last_results.append(("", "", False, status))
             return False, status
 
-        # Desired Telegram format: "<имя> Вам пишут в лс!"
         alert = f"{self.owner_name} Вам пишут в лс!" if self.owner_name else "Вам пишут в лс!"
         ok, status = self._send(alert)
         self.last_results.append(("", "", ok, status))
@@ -303,6 +214,12 @@ class TelegramWatcher:
             self.seen.add(key)
             return True, status
         return False, status
+
+    def extract_personal(self, text):
+        return None
+
+    def extract_personal_all(self, text):
+        return []
 
     def stop(self):
         self.stop_event.set()
